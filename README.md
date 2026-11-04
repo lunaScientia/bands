@@ -2,7 +2,7 @@
 
 A Max for Live audio effect for inspecting and listening to five frequency bands, with a focus on the low end.
 
-**[Download BANDS.amxd](https://github.com/lunaScientia/bands/raw/refs/heads/main/dist/Standalone/BANDS.amxd)**
+**[Download BANDS.amxd](https://github.com/lunaScientia/bands/releases/download/v1.0.0/BANDS.amxd)**
 
 ## Install
 
@@ -34,7 +34,9 @@ The LR4-style crossover uses 24 dB/octave filters with all-pass phase compensati
 
 ## Status
 
-This is a development preview. Steady-playback clicks and an unexpected Live exit have been reported; neither has been reproduced or proven fixed. Offline verification does not establish native audio performance or long-session stability. The latest window behavior also needs verification inside Live.
+**v1.0.0** is the first tagged release of BANDS. Download the frozen device from the [release page](https://github.com/lunaScientia/bands/releases/tag/v1.0.0).
+
+Earlier steady-playback clicks and an unexpected Live exit have not been reproduced or proven fixed. Offline verification does not establish native audio performance or long-session stability; the release does not claim those reports are resolved.
 
 See [CHANGELOG.md](CHANGELOG.md) for the current analyzer improvements and their tradeoffs.
 

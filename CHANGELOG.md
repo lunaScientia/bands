@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.0 — 2026-11-04
+
+- First tagged release of the current standalone device.
+- Includes five-band spectrum analysis, gain/solo/mute controls, adjustable crossovers, the expanded spectrum window, and reference capture.
+- Includes the analyzer workload improvements and solo/mute fixes listed below.
+- Publishes the existing frozen `BANDS.amxd` unchanged as a GitHub Release asset; all dependencies are embedded.
+- Earlier unconfirmed click/crash reports remain documented under known unresolved issues.
+
 ## 2026-11-04 — Solo/mute exclusivity
 
 - Enabling Solo clears Mute in the same band; enabling Mute clears Solo. UI parameters and audio control state update together. Turning either off does not enable the other.
