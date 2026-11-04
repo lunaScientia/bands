@@ -24,6 +24,8 @@ jobs:
         run: python3 build.py
       - name: Check audio graph and frequency response
         run: python3 tests/verify.py
+      - name: Check solo and mute control behavior
+        run: node tests/controller.js
       - name: Check renderer state and allocations
         run: node --expose-gc tests/renderer.js
       - name: Check frozen package

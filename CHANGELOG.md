@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-04 — Solo/mute exclusivity
+
+- Enabling Solo clears Mute in the same band; enabling Mute clears Solo. UI parameters and audio control state update together. Turning either off does not enable the other.
+- Multiple bands can still be soloed together.
+- Initialization reads stored parameter values using `outputvalue`; it no longer sends `bang`, which toggles `live.text` buttons.
+- Older presets with both controls enabled in one band normalize to a single listening mode.
+- Added controller regression checks and rebuilt the single-file device. Audio filters, gain ramp times, and spectrum renderer are unchanged.
+
 ## 2026-09-18 — Analyzer and window update
 
 - Expand now configures a floating window, opens it, then applies `topmost 1`. The command requires a previously visible window. Native Live verification remains pending.

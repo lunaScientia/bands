@@ -16,7 +16,7 @@ The device is a single frozen `.amxd` file with its scripts and FFT patch embedd
 
 ## Features
 
-- Five stereo bands with gain, solo, and mute controls.
+- Five stereo bands with gain, solo, and mute controls. Enabling S clears M in the same band, and enabling M clears S. Multiple bands can be soloed together.
 - Four adjustable crossover frequencies and an output trim.
 - Input, output, and individual band spectrum curves.
 - Low-end zoom, expanded spectrum window, display Hold, and input reference Capture.
@@ -46,6 +46,7 @@ Requirements: Python 3.10+ and Node.js 22. No third-party Python or Node package
 python3 build.py
 python3 tests/verify.py
 python3 tests/verify_package.py
+node tests/controller.js
 node --expose-gc tests/renderer.js
 ```
 
@@ -58,6 +59,7 @@ The build produces a development bundle under `dist/` and the distributable sing
 | `source/` | Max patches and JavaScript controller/renderer |
 | `tests/verify.py` | Audio topology and response checks at five sample rates |
 | `tests/verify_package.py` | Frozen container and embedded dependency checks |
+| `tests/controller.js` | Solo/mute state, parameter synchronization, and original filter coefficients |
 | `tests/renderer.js` | Renderer scheduling, state bounds, and simulated heap checks |
 | `tests/fixtures/v1-original/` | Original audio implementation for regression comparison |
 | `dist/Standalone/BANDS.amxd` | Installable device |

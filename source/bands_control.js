@@ -44,8 +44,26 @@ function mix() {
     }
 }
 function gain(i,v) { gains[i|0]=Math.max(-60,Math.min(12,v)); mix(); }
-function solo(i,v) { solos[i|0]=v?1:0; mix(); }
-function mute(i,v) { mutes[i|0]=v?1:0; mix(); }
+// Only one listening mode may be active per band. "set" also updates the
+// stored Live parameter, without feeding another event back into this script.
+function solo(i,v) {
+    i=i|0; if(i<0 || i>=5) return;
+    solos[i]=v?1:0;
+    if(solos[i]) {
+        mutes[i]=0;
+        this.patcher.getnamed("mute"+i).message("set",0);
+    }
+    mix();
+}
+function mute(i,v) {
+    i=i|0; if(i<0 || i>=5) return;
+    mutes[i]=v?1:0;
+    if(mutes[i]) {
+        solos[i]=0;
+        this.patcher.getnamed("solo"+i).message("set",0);
+    }
+    mix();
+}
 function trim(v) { send("trim", [Math.pow(10,v/20),25]); }
 function original(v) { send("dry",[v?1:0,25]); view("original",v); }
 function command() {
@@ -65,10 +83,10 @@ function reset() {
 }
 function init() {
     for(var i=0;i<4;i++) crossover(i,edges[i]);
-    // Bang saved Live parameters AFTER live.thisdevice, never overwrite them.
+    // Read saved values after live.thisdevice. A bang would toggle live.text.
     var controls=["trim","original"];
     for(var k=0;k<5;k++) controls.push("gain"+k,"solo"+k,"mute"+k);
     for(var j=0;j<4;j++) controls.push("edge"+j);
-    for(var n=0;n<controls.length;n++) this.patcher.getnamed(controls[n]).message("bang");
+    for(var n=0;n<controls.length;n++) this.patcher.getnamed(controls[n]).message("outputvalue");
     view("samplerate",sr);
 }
