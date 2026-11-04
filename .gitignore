@@ -1,0 +1,24 @@
+# Local OS / Python files
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+
+# Private working history and older distributions
+/backups/
+/releases/
+/dist/*
+!/dist/Standalone/
+/dist/Standalone/*
+!/dist/Standalone/BANDS.amxd
+
+# Generated verification output and local runtime/crash diagnostics
+/tests/*.json
+/tests/*.txt
+/tests/Runtime*.maxpat
+
+# Historical native harness for an older analyzer configuration
+/tests/make_runtime.py
+/tests/runtime_probe.js
