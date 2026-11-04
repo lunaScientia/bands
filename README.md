@@ -2,7 +2,7 @@
 
 A Max for Live audio effect for inspecting and listening to five frequency bands, with a focus on the low end.
 
-**[Download BANDS.amxd](https://github.com/KirillIvanov1/bands/raw/refs/heads/main/dist/Standalone/BANDS.amxd)**
+**[Download BANDS.amxd](https://github.com/lunaScientia/bands/raw/refs/heads/main/dist/Standalone/BANDS.amxd)**
 
 ## Install
 
