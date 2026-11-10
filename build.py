@@ -3,12 +3,18 @@
 import json, math, pathlib, struct, shutil
 ROOT=pathlib.Path(__file__).resolve().parent
 SRC=ROOT/'source'; DIST=ROOT/'dist'
-COLORS=[[.69,.53,1,1],[.30,.64,1,1],[.22,.85,.76,1],[.94,.72,.36,1],[.95,.43,.49,1]]
-EDGES=[30,80,250,2500]
-NAMES=['Ultra Low','Sub','Bass','Mids','Highs']
+VERSION='1.1.0'
+COLORS=[[.69,.53,1,1],[.30,.64,1,1],[.22,.85,.76,1],[.94,.72,.36,1],
+        [.98,.57,.32,1],[.95,.43,.49,1],[.90,.48,.79,1],[.66,.78,.97,1]]
+EDGES=[30,80,250,2000,4000,6000,12000]
+LIMITS=[(15,49),(50,139),(140,599),(600,2999),(3000,4999),(5000,9999),(10000,18000)]
+NAMES=['Ultra Low','Sub','Bass','Mids','High-Mids','Presence','High','Ultra High']
+BAND_COUNT=len(NAMES)
+SPECTRA=BAND_COUNT+2
+WIDTH=1340
 
 class Patch:
-    def __init__(self, width=1120, height=169, presentation=0):
+    def __init__(self, width=WIDTH, height=169, presentation=0):
         self.p={'fileversion':1,'appversion':{'major':8,'minor':6,'revision':5,'architecture':'x64','modernui':1},
                 'classnamespace':'box','rect':[80.,100.,float(width),float(height)],
                 'openrect':[0.,0.,float(width),float(height)],'openinpresentation':presentation,
@@ -29,6 +35,7 @@ class Patch:
     def save(self,path):path.write_text(json.dumps({'patcher':self.p},indent=2)+'\n')
 
 def coeff(f,sr=48000):
+    f=min(f,sr*.49)
     w=2*math.pi*f/sr;c=math.cos(w);a=math.sin(w)/math.sqrt(2);a0=1+a;a1=-2*c/a0;a2=(1-a)/a0
     return {'lp':[(1-c)/2/a0,(1-c)/a0,(1-c)/2/a0,a1,a2],
             'hp':[(1+c)/2/a0,-(1+c)/a0,(1+c)/2/a0,a1,a2], 'ap':[a2,a1,1,a1,a2]}
@@ -36,9 +43,9 @@ def coeff(f,sr=48000):
 def build():
     DIST.mkdir(exist_ok=True)
     p=Patch(presentation=1)
-    p.p.update(devicewidth=1120,latency=0,enablehscroll=0,enablevscroll=0,
-               description='Five-band stereo listening and low-end spectrum workbench.',
-               digest='BANDS — five-band spectrum and listening',tags='audio analysis spectrum crossover bass')
+    p.p.update(devicewidth=WIDTH,latency=0,enablehscroll=0,enablevscroll=0,
+               description='Eight-band stereo listening and low-end spectrum workbench.',
+               digest='BANDS — eight-band spectrum and listening',tags='audio analysis spectrum crossover bass')
     p.obj('in','plugin~',2,2,rect=[30,200,70,22]);p.obj('out','plugout~',2,2)
     p.obj('control','js bands_control.js #0',1,0)
     p.obj('viewbus','r #0-view');p.obj('cmd','r #0-command');p.wire('cmd','control')
@@ -69,35 +76,35 @@ def build():
         p.box(id,'comment',text=t,rect=r,pres=r,outs=0,textcolor=color,fontsize=size,
               varname=id,ignoreclick=1)
     comment('splits','SPLITS / Hz',[12,146,65,18],size=9)
-    limits=[(15,49),(50,139),(140,599),(600,8000)]
     for i,f in enumerate(EDGES):
-        parameter('edge'+str(i),'live.numbox','Crossover '+str(i+1),'Split '+str(i+1),*limits[i],f,3,[80+i*85,146,76,18])
+        parameter('edge'+str(i),'live.numbox','Crossover '+str(i+1),'Split '+str(i+1),*LIMITS[i],f,3,[80+i*63,146,58,18])
         p.obj('fpack'+str(i),'pack 0. 60');p.obj('fline'+str(i),'line '+str(f)+'. 10',2,2)
         p.wire('edge'+str(i),'fpack'+str(i));p.wire('fpack'+str(i),'fline'+str(i))
         p.obj('fmsg'+str(i),'prepend crossover '+str(i));p.wire('fline'+str(i),'fmsg'+str(i));p.wire('fmsg'+str(i),'control')
     for i,name in enumerate(NAMES):
-        x=542+i*91
-        p.box('stripe'+str(i),'panel',rect=[x,7,81,3],pres=[x,7,81,3],outs=0,bgcolor=COLORS[i],border=0)
-        comment('label'+str(i),name.upper(),[x,16,88,17],COLORS[i],10)
-        comment('range'+str(i),'',[x,34,88,17],size=9)
-        parameter('gain'+str(i),'live.dial',name+' Gain','Gain',-60,12,0,4,[x+12,58,60,60],COLORS[i],showname=0)
+        x=542+i*83
+        p.box('stripe'+str(i),'panel',rect=[x,7,75,3],pres=[x,7,75,3],outs=0,bgcolor=COLORS[i],border=0)
+        comment('label'+str(i),name.upper(),[x,16,80,17],COLORS[i],10)
+        comment('range'+str(i),'',[x,34,80,17],size=9)
+        parameter('gain'+str(i),'live.dial',name+' Gain','Gain',-60,12,0,4,[x+8,58,60,60],COLORS[i],showname=0)
         route('gain'+str(i),'gain '+str(i))
-        for kind,dx,label in [('solo',0,'S'),('mute',44,'M')]:
-            parameter(kind+str(i),'live.text',name+' '+kind.title(),label,0,1,0,0,[x+dx,125,37,20],
+        for kind,dx,label in [('solo',0,'S'),('mute',40,'M')]:
+            parameter(kind+str(i),'live.text',name+' '+kind.title(),label,0,1,0,0,[x+dx,125,35,20],
                       enum=['Off','On'],text=label,texton=label,activebgoncolor=COLORS[i],activebgcolor=[.16,.19,.22,1],
                       bgcolor=[.16,.19,.22,1],textcolor=[.7,.76,.8,1],textoncolor=[.07,.09,.11,1])
             route(kind+str(i),kind+' '+str(i))
-    comment('trimtitle','OUTPUT',[1011,15,95,18],size=10)
-    parameter('trim','live.dial','Output Trim','Trim',-24,12,0,4,[1024,52,60,61],showname=0)
+    output_x=542+BAND_COUNT*83+12
+    comment('trimtitle','OUTPUT',[output_x+3,15,95,18],size=10)
+    parameter('trim','live.dial','Output Trim','Trim',-24,12,0,4,[output_x+16,52,60,61],showname=0)
     route('trim','trim')
-    parameter('original','live.text','Listen to Original','Original',0,1,0,0,[1008,122,99,21],enum=['Bands','Original'],
+    parameter('original','live.text','Listen to Original','Original',0,1,0,0,[output_x,122,99,21],enum=['Bands','Original'],
               text='Original',texton='Original',activebgoncolor=[.45,.62,.64,1],activebgcolor=[.16,.19,.22,1],textoncolor=[.06,.08,.1,1])
     route('original','original')
-    p.box('reset','textbutton',text='Reset mix',rect=[1008,148,99,17],pres=[1008,148,99,17],outs=3,parameter_enable=0,fontsize=9)
+    p.box('reset','textbutton',text='Reset mix',rect=[output_x,148,99,17],pres=[output_x,148,99,17],outs=3,parameter_enable=0,fontsize=9)
     p.box('resetmsg','message',text='command reset');p.wire('reset','resetmsg');p.wire('resetmsg','control')
-    comment('tip','S = solo  /  M = mute  /  24 dB/oct',[547,149,420,16],size=9)
+    comment('tip','BANDS '+VERSION+'  /  S = solo  /  M = mute  /  24 dB/oct',[547,149,420,16],size=9)
     # LR4 splits. Every earlier branch gets the all-pass of each later split.
-    for i in range(4):
+    for i in range(len(EDGES)):
         for kind in ['lp','hp','ap']:p.obj('r'+kind+str(i),'r #0-'+kind+str(i))
     def bq(id,src,kind,i):
         args=' '.join(format(v,'.17g') for v in coeff(EDGES[i])[kind])
@@ -107,13 +114,13 @@ def build():
     bands=[[],[]]
     for ch in range(2):
         high=('in',ch)
-        for i in range(4):
+        for i in range(len(EDGES)):
             low=bq(f'{ch}lp{i}a',high,'lp',i);low=bq(f'{ch}lp{i}b',low,'lp',i)
             next_high=bq(f'{ch}hp{i}a',high,'hp',i);next_high=bq(f'{ch}hp{i}b',next_high,'hp',i)
-            for j in range(i+1,4):low=bq(f'{ch}comp{i}_{j}',low,'ap',j)
+            for j in range(i+1,len(EDGES)):low=bq(f'{ch}comp{i}_{j}',low,'ap',j)
             bands[ch].append(low);high=next_high
         bands[ch].append(high)
-    for i in range(5):
+    for i in range(BAND_COUNT):
         p.obj('gainr'+str(i),'r #0-gain'+str(i));p.obj('gainline'+str(i),'line~ 1.',2,2)
         p.wire('gainr'+str(i),'gainline'+str(i))
     p.obj('trimr','r #0-trim');p.obj('trimline','line~ 1.',2,2);p.wire('trimr','trimline')
@@ -130,12 +137,12 @@ def build():
         p.obj('dry'+str(ch),'*~',2,1);p.wire('in','dry'+str(ch),ch);p.wire('dryline','dry'+str(ch),0,1)
         p.obj('output'+str(ch),'*~',2,1);p.wire('wet'+str(ch),'output'+str(ch));p.wire('dry'+str(ch),'output'+str(ch))
         p.wire('trimline','output'+str(ch),0,1);p.wire('output'+str(ch),'out',0,ch);output.append('output'+str(ch))
-    # Stereo power spectra: input, actual output, then five post-gain bands.
-    for i in range(7):p.obj('buffer'+str(i),'buffer~ #0-spec'+str(i)+' @samps 8192',1,2)
-    p.obj('fft','pfft~ bands_fft 16384 4 args #0',14,0)
+    # Stereo power spectra: input, actual output, then all post-gain bands.
+    for i in range(SPECTRA):p.obj('buffer'+str(i),'buffer~ #0-spec'+str(i)+' @samps 8192',1,2)
+    p.obj('fft','pfft~ bands_fft 16384 4 args #0',2*SPECTRA,0)
     p.wire('in','fft',0,0);p.wire('in','fft',1,1)
     for ch in range(2):p.wire(output[ch],'fft',0,2+ch)
-    for i in range(5):
+    for i in range(BAND_COUNT):
         for ch in range(2):p.wire(weighted[ch][i],'fft',0,4+2*i+ch)
     # Separate window with the same instance-local analysis buffers and messages.
     detail=Patch(1060,560,1)
@@ -160,10 +167,11 @@ def build():
             b['patching_rect']=[30+(index%6)*280,220+(index//6)*65,250,22];index+=1
     p.p['parameters']={**params,'parameterbanks':{str(i):{'index':i,'name':name,'parameters':bank}
         for i,(name,bank) in enumerate([
-            ('Mix',[n+' Gain' for n in NAMES]+['Output Trim','Listen to Original','-']),
-            ('Crossovers',['Crossover '+str(i+1) for i in range(4)]+['-']*4),
-            ('Solo',[n+' Solo' for n in NAMES]+['-']*3),
-            ('Mute',[n+' Mute' for n in NAMES]+['-']*3)])},'inherited_shortname':1}
+            ('Mix',[n+' Gain' for n in NAMES]),
+            ('Crossovers',['Crossover '+str(i+1) for i in range(len(EDGES))]+['-']),
+            ('Solo',[n+' Solo' for n in NAMES]),
+            ('Mute',[n+' Mute' for n in NAMES]),
+            ('Output',['Output Trim','Listen to Original']+['-']*6)])},'inherited_shortname':1}
     p.p['dependency_cache']=[{'name':'bands_control.js','type':'TEXT','implicit':1},
                               {'name':'bands_view.js','type':'TEXT','implicit':1},
                               {'name':'bands_fft.maxpat','type':'JSON','implicit':1}]
@@ -171,7 +179,7 @@ def build():
                     'showdependencies':1,'autolocalize':0,'contents':{'patchers':{},'code':{}},
                     'layout':{},'searchpath':{},'readonly':0,'devpathtype':0,'devpath':'.'}
     fft=Patch(1200,700)
-    for i in range(7):
+    for i in range(SPECTRA):
         for ch in range(2):
             id=f'fft{i}_{ch}';fft.obj(id,f'fftin~ {2*i+ch+1} hanning',1,3)
             for part in range(2):

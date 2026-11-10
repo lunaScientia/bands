@@ -6,6 +6,8 @@ const assert = require('assert/strict');
 const source = fs.readFileSync('source/bands_control.js', 'utf8');
 const patch = JSON.parse(fs.readFileSync('source/BANDS.maxpat', 'utf8')).patcher;
 const parameters = patch.boxes.map(w => w.box).filter(b => b.parameter_enable);
+const bandCount=8, edgeValues=[30,80,250,2000,4000,6000,12000];
+assert.equal(parameters.filter(b=>b.varname.startsWith('gain')).length,bandCount);
 
 function harness(saved = {}) {
     const values = {}, objects = {}, outputs = {}, writes = [];
@@ -34,7 +36,7 @@ function harness(saved = {}) {
             emit(name);
         } };
     }
-    for (let i = 0; i < 5; i++) objects['range' + i] = {message: () => {}};
+    for (let i = 0; i < bandCount; i++) objects['range' + i] = {message: () => {}};
     vm.createContext(context);
     vm.runInContext(source, context);
     context.init();
@@ -42,8 +44,8 @@ function harness(saved = {}) {
         click: name => objects[name].message('bang') };
 }
 function verify(h) {
-    const anySolo = Array.from({length: 5}, (_, i) => h.values['solo' + i]).some(Boolean);
-    for (let i = 0; i < 5; i++) {
+    const anySolo = Array.from({length: bandCount}, (_, i) => h.values['solo' + i]).some(Boolean);
+    for (let i = 0; i < bandCount; i++) {
         const s = h.values['solo' + i], m = h.values['mute' + i];
         assert(!(s && m), 'Solo and Mute both on in band ' + i);
         assert.equal(h.context.solos[i], s);
@@ -53,11 +55,12 @@ function verify(h) {
         assert.deepEqual(h.outputs['test-gain' + i], [expected, 25]);
     }
 }
-for (let band = 0; band < 5; band++) {
+for (let band = 0; band < bandCount; band++) {
     const h = harness();
     assert.equal(h.values.original, 0, 'init must not toggle Original');
     assert.equal(h.context.solos.reduce((a,b) => a+b, 0), 0, 'init must not activate Solo');
-    verify(h);
+    assert.deepEqual(Array.from(h.context.edges),edgeValues);
+    h.event('gain'+band,-9);verify(h);
     h.click('solo' + band); verify(h);
     h.click('mute' + band); verify(h);
     assert.equal(h.values['solo' + band], 0);
@@ -79,14 +82,14 @@ h.event('mute0', 1); verify(h);
 assert.equal(h.values.solo2, 1, 'another band must keep its Solo');
 h.event('solo0', 1); verify(h);
 assert.equal(h.values.solo2, 1, 'multiple solos must remain possible');
-for (let i = 0; i < 5; i++) {
+for (let i = 0; i < bandCount; i++) {
     const conflict = harness({['solo'+i]:1, ['mute'+i]:1});
     assert.equal(conflict.values['solo'+i], 1);
     assert.equal(conflict.values['mute'+i], 0);
     verify(conflict);
 }
 for (let n = 0; n < 2000; n++) {
-    h.event((n % 3 ? 'solo' : 'mute') + n % 5, n % 4 ? 1 : 0);
+    h.event((n % 3 ? 'solo' : 'mute') + n % bandCount, n % 4 ? 1 : 0);
     verify(h);
 }
 h.context.reset();verify(h);
@@ -98,10 +101,19 @@ const baseline = {jsarguments: ['bands_control.js', 'baseline']};
 vm.createContext(baseline);
 vm.runInContext(fs.readFileSync('tests/fixtures/v1-original/bands_control.js', 'utf8'), baseline);
 for (const rate of [44100, 48000, 88200, 96000, 192000]) {
-    for (const frequency of [15, 30, 49, 50, 80, 139, 140, 250, 599, 600, 2500, 8000]) {
+    for (const frequency of [15, 30, 49, 50, 80, 139, 140, 250, 599, 600, 2000, 4000, 6000, 12000, 18000]) {
         assert.equal(JSON.stringify(h.context.coeff(frequency, rate)), JSON.stringify(baseline.coeff(frequency, rate)));
     }
 }
+// New crossovers reach every coefficient receiver and every view boundary.
+for(let i=0;i<edgeValues.length;i++) {
+    h.event('edge'+i,edgeValues[i]+1);
+    for(const kind of ['lp','hp','ap'])assert.deepEqual(h.outputs['test-'+kind+i],Array.from(h.context.coeff(edgeValues[i]+1,48000)[kind]));
+}
+assert.equal(h.outputs['test-view'][0],'edges');
+assert.equal(h.outputs['test-view'].length,edgeValues.length+1);
+h.context.samplerate(32000);
+for(const kind of ['lp','hp','ap'])assert(h.outputs['test-'+kind+'6'].every(Number.isFinite));
 const report = {status:'PASS', checks:['S to M and M to S in every band', 'no automatic opposite activation on off', 'multiple Solo bands', 'parameter and audio state agree', 'repeated init and saved values', 'legacy conflicting state', '2000 control events', 'reset', 'original filter coefficients and 25ms gain ramps'], limitations:'Mocked native parameters; not a Live UI or automation integration test.'};
 fs.writeFileSync('tests/controller-results.json', JSON.stringify(report, null, 2)+'\n');
 console.log(JSON.stringify(report, null, 2));

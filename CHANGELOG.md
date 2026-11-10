@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.0 — 2026-11-10
+
+- Expanded to eight continuous bands with defaults below 30 Hz, 30–80 Hz, 80–250 Hz, 250 Hz–2 kHz, 2–4 kHz, 4–6 kHz, 6–12 kHz, and above 12 kHz.
+- Added High-Mids, Presence, High, and Ultra High controls, spectra, meters, and hardware-control banks. Presence covers the 4–6 kHz gap between the requested ranges.
+- Added a high-frequency view from 2 kHz to Nyquist, alongside the existing low-end and full-range views.
+- Generalized the LR4 crossover and phase compensation to seven splits, retaining the 25 ms gain ramps, Solo/Mute exclusivity, and saved-state initialization.
+- Expanded the device panel to fit all eight bands; bounded spectrum caches and hidden-view gating remain in place.
+- Packaged as one frozen `BANDS.amxd`. v1.0.0 remains unchanged; load v1.1.0 as a separate instance because five-band presets/automation are not migration-compatible.
+- Offline response, routing, control, renderer, and packaging checks cover the added bands. Native Live playback, CPU usage, and window behavior remain unverified.
+
 ## v1.0.0 — 2026-11-04
 
 - First tagged release of the current standalone device.

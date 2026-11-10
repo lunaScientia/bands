@@ -2,14 +2,19 @@
 autowatch=0; inlets=1; outlets=1;
 mgraphics.init(); mgraphics.relative_coords=0; mgraphics.autofill=0;
 var uid=jsarguments[1], large=Number(jsarguments[2])||0;
-var colors=[[0.69,0.53,1],[0.30,0.64,1],[0.22,0.85,0.76],[0.94,0.72,0.36],[0.95,0.43,0.49]];
-var sr=48000, N=16384, bins=N/2, cuts=[30,80,250,2500], zoomed=1, held=0, dry=0;
-var buffers=[], raw=[], smooth=[], ref=null, active=[1,1,1,1,1], meters=[-120,-120,-120,-120,-120];
+var colors=[[0.69,0.53,1],[0.30,0.64,1],[0.22,0.85,0.76],[0.94,0.72,0.36],
+            [0.98,0.57,0.32],[0.95,0.43,0.49],[0.90,0.48,0.79],[0.66,0.78,0.97]];
+var names=["ULTRA LOW","SUB","BASS","MIDS","HIGH-MIDS","PRESENCE","HIGH","ULTRA HIGH"];
+var bandCount=names.length, spectrumCount=bandCount+2;
+function emptySpectra() {var a=[];for(var j=0;j<spectrumCount;j++)a.push([]);return a;}
+var sr=48000, N=16384, bins=N/2, cuts=[30,80,250,2000,4000,6000,12000], zoomed=1, held=0, dry=0;
+var buffers=[], raw=[], smooth=[], ref=null, active=[], meters=[];
 var plot, buttons=[], mouse=[-1,-1], status="Play audio to analyze", peak=-120;
-for(var i=0;i<7;i++) {buffers.push(new Buffer(uid+"-spec"+i));raw.push([]);smooth.push([]);}
+for(var b=0;b<bandCount;b++){active.push(1);meters.push(-120);}
+for(var i=0;i<spectrumCount;i++) {buffers.push(new Buffer(uid+"-spec"+i));raw.push([]);smooth.push([]);}
 // Only the visible view acquires data; the dock pauses while the pop-out is open.
 // Buffer.peek allocates: copy no faster than one FFT hop, never from paint().
-var targets=[[],[],[],[],[],[],[]], refCurve=[], mapping=[], mapKey="";
+var targets=emptySpectra(), refCurve=[], mapping=[], mapKey="";
 var lastRead=0, lastTick=0, dataDirty=true, refDirty=true;
 function visible() {
     if(large) return this.patcher.wind.visible;
@@ -18,13 +23,13 @@ function visible() {
 }
 function samplerate(v) {
     if(!isFinite(v) || v<22050) return;
-    if(v!==sr) {ref=null;smooth=[[],[],[],[],[],[],[]];mapKey="";lastRead=0;}
+    if(v!==sr) {ref=null;smooth=emptySpectra();mapKey="";lastRead=0;}
     sr=v;
 }
 function edges() {cuts=arrayfromargs(arguments);}
 function bandstate(i,g,a) {active[i]=a;}
 function original(v) {dry=v;}
-function zoom(v) {zoomed=v;mapKey="";}
+function zoom(v) {zoomed=v===2?2:(v?1:0);mapKey="";}
 function hold(v) {held=v;}
 function capture() {
     var data=buffers[0].peek(1,0,bins);
@@ -33,15 +38,15 @@ function capture() {
 function clearref() {ref=null;refCurve=[];}
 function layout() {
     var w=box.rect[2]-box.rect[0],h=box.rect[3]-box.rect[1];
-    plot={x:34,y:large?55:35,w:Math.max(1,w-46),h:Math.max(1,large?h-155:h-70),max:Math.min(zoomed?500:20000,sr/2)};
+    plot={x:34,y:large?55:35,w:Math.max(1,w-46),h:Math.max(1,large?h-155:h-70),min:zoomed===2?2000:10,max:zoomed===2?sr/2:Math.min(zoomed===1?500:20000,sr/2)};
     // Bound point count even if the user stretches the window across displays.
     var count=Math.min(1536,Math.max(1,Math.floor(plot.w)));
-    var key=count+":"+plot.max+":"+sr;
+    var key=count+":"+plot.min+":"+plot.max+":"+sr;
     if(key===mapKey)return;
     mapKey=key;mapping=[];dataDirty=true;refDirty=true;
-    smooth=[[],[],[],[],[],[],[]];
+    smooth=emptySpectra();
     for(var x=0;x<=count;x++) {
-        var f=10*Math.pow(plot.max/10,x/count),next=10*Math.pow(plot.max/10,(x+1)/count);
+        var f=plot.min*Math.pow(plot.max/plot.min,x/count),next=plot.min*Math.pow(plot.max/plot.min,(x+1)/count);
         var bin=Math.min(bins-1,f*N/sr),start=Math.max(1,Math.floor(bin));
         mapping.push([start,Math.min(bins-1,Math.floor(next*N/sr)),Math.max(0,bin-start),(next-f)*N/sr<1]);
     }
@@ -61,7 +66,7 @@ function bang() {
     lastTick=now;layout();
     if(!held && (!lastRead || now-lastRead>=1000*N/(4*sr))) {
         lastRead=now;
-        for(var c=0;c<7;c++) {
+        for(var c=0;c<spectrumCount;c++) {
             var data=buffers[c].peek(1,0,bins);
             if(!data || data.length!==bins)continue;
             raw[c]=data;
@@ -73,7 +78,7 @@ function bang() {
         dataDirty=true;status=raw[0].length?"Stereo power / 16k Hann":"Waiting for audio engine";
     }
     var alpha=1-Math.exp(-dt/65);
-    for(var i=0;i<7;i++) {
+    for(var i=0;i<spectrumCount;i++) {
         if(raw[i].length!==bins)continue;
         if(dataDirty)reduce(raw[i],targets[i]);
         if(!held || smooth[i].length!==targets[i].length) {
@@ -91,7 +96,7 @@ function color(c,a) {mgraphics.set_source_rgba(c[0],c[1],c[2],a===undefined?1:a)
 function rect(x,y,w,h,c,a) {color(c,a);mgraphics.rectangle(x,y,w,h);mgraphics.fill();}
 function text(t,x,y,size,c) {color(c||[0.64,0.69,0.73]);mgraphics.select_font_face("Arial");mgraphics.set_font_size(size);mgraphics.move_to(x,y);mgraphics.show_text(t);}
 function line(x,y,x2,y2,c,a,width) {color(c,a);mgraphics.set_line_width(width||1);mgraphics.move_to(x,y);mgraphics.line_to(x2,y2);mgraphics.stroke();}
-function freqx(f) {return plot.x+Math.log(f/10)/Math.log(plot.max/10)*plot.w;}
+function freqx(f) {return plot.x+Math.log(f/plot.min)/Math.log(plot.max/plot.min)*plot.w;}
 function dbY(db) {return plot.y+Math.max(0,Math.min(1,(6-db)/102))*plot.h;}
 function fmt(f) {return f>=1000 ? (f/1000).toFixed(f%1000?1:0)+"k" : Math.round(f)+"";}
 function button(label,x,y,w,cmd,val,on) {
@@ -112,47 +117,49 @@ function spectrum(arr,c,idx,width) {
 function paint() {
     var w=box.rect[2]-box.rect[0],h=box.rect[3]-box.rect[1];buttons=[];
     rect(0,0,w,h,[0.065,0.085,0.105]);
-    text("B A N D S",12,18,13,[0.91,0.96,0.96]);
+    text("B A N D S  1.1",12,18,13,[0.91,0.96,0.96]);
     var bx=large?w-365:174;
-    button(zoomed?"10–500 Hz":"10–20k Hz",bx,4,78,"zoom",zoomed?0:1,zoomed);
+    var zoomLabel=zoomed===1?"10–500 Hz":zoomed===2?"2–"+fmt(sr/2)+" Hz":"10–20k Hz";
+    button(zoomLabel,bx,4,78,"zoom",zoomed===1?0:zoomed===0?2:1,zoomed!==0);
     button(held?"Resume":"Hold",bx+83,4,53,"hold",held?0:1,held);
     button("Capture",bx+141,4,60,"capture",0,!!ref);
     button("Clear",bx+206,4,45,"clearref",0,0);
     if(!large)button("Expand",bx+256,4,62,"expand",0,0);
-    else text("LOW-END WORKBENCH",150,18,11,[0.4,0.51,0.57]);
+    else text("8-BAND WORKBENCH",150,18,11,[0.4,0.51,0.57]);
     if(!plot)layout();
-    var boundaries=[10,cuts[0],cuts[1],cuts[2],cuts[3],plot.max];
-    for(var b=0;b<5;b++) {
-        var l=Math.max(10,boundaries[b]),r=Math.min(plot.max,boundaries[b+1]);
+    var boundaries=[10].concat(cuts,[sr/2]);
+    for(var b=0;b<bandCount;b++) {
+        var l=Math.max(plot.min,boundaries[b]),r=Math.min(plot.max,boundaries[b+1]);
         if(r<=l)continue;
         rect(freqx(l),plot.y,freqx(r)-freqx(l),plot.h,colors[b],0.065);
-        if(large)text(["ULTRA LOW","SUB","BASS","MIDS","HIGHS"][b],freqx(l)+7,plot.y+15,10,colors[b]);
+        if(large && freqx(r)-freqx(l)>names[b].length*6+14)text(names[b],freqx(l)+7,plot.y+15,10,colors[b]);
     }
     for(var d=0;d>=-96;d-=24) {var yy=dbY(d);line(plot.x,yy,plot.x+plot.w,yy,[0.45,0.52,0.56],0.15);text(""+d,4,yy+3,9);}
-    var ticks=zoomed?[10,20,30,50,80,100,200,300,500]:[10,20,50,100,200,500,1000,2000,5000,10000,20000];
+    var ticks=zoomed===1?[10,20,30,50,80,100,200,300,500]:zoomed===2?[2000,3000,4000,6000,8000,12000,16000,20000,24000,32000,48000,96000]:[10,20,50,100,200,500,1000,2000,4000,6000,12000,20000];
     for(var t=0;t<ticks.length;t++) {
+        if(ticks[t]<plot.min || ticks[t]>plot.max)continue;
         var xx=freqx(ticks[t]);line(xx,plot.y,xx,plot.y+plot.h,[0.45,0.52,0.56],0.13);
         text(fmt(ticks[t]),xx-6,plot.y+plot.h+13,9);
     }
-    for(var e=0;e<4;e++) if(cuts[e]<plot.max)line(freqx(cuts[e]),plot.y,freqx(cuts[e]),plot.y+plot.h,colors[e],0.4);
+    for(var e=0;e<cuts.length;e++) if(cuts[e]>plot.min && cuts[e]<plot.max)line(freqx(cuts[e]),plot.y,freqx(cuts[e]),plot.y+plot.h,colors[e],0.4);
     spectrum(smooth[0],[0.75,0.8,0.84],0,1);
-    for(var s=0;s<5;s++) spectrum(smooth[s+2],colors[s],s+2,large?1.5:1);
+    for(var s=0;s<bandCount;s++) spectrum(smooth[s+2],colors[s],s+2,large?1.5:1);
     spectrum(smooth[1],[0.95,0.98,0.99],1,large?2:1.3);
     if(ref)spectrum(refCurve,[0.99,0.48,0.79],-1,1.5);
     var ly=plot.y+plot.h+28;
     text("INPUT",12,ly,9,[0.57,0.62,0.66]);text(dry?"OUTPUT · ORIGINAL":"OUTPUT",61,ly,9,[0.96,0.98,1]);
     if(ref)text("REFERENCE",dry?178:124,ly,9,[0.99,0.48,0.79]);
     if(large) {
-        for(var m=0;m<5;m++) {
-            var mx=20+m*(w-40)/5;
-            rect(mx,h-58,(w-65)/5,42,[0.12,0.15,0.18]);
-            text(["ULTRA LOW","SUB","BASS","MIDS","HIGHS"][m],mx+10,h-42,10,colors[m]);
-            text((active[m]?meters[m].toFixed(1)+" dBFS RMS":"MUTED"),mx+10,h-25,12,[0.85,0.91,0.93]);
+        for(var m=0;m<bandCount;m++) {
+            var mx=20+m*(w-40)/bandCount;
+            rect(mx,h-58,(w-40)/bandCount-5,42,[0.12,0.15,0.18]);
+            text(names[m],mx+10,h-42,10,colors[m]);
+            text((active[m]?meters[m].toFixed(1)+" dBFS RMS":"MUTED"),mx+10,h-25,10,[0.85,0.91,0.93]);
         }
         text(held?"DISPLAY HELD · audio keeps running":status+"  /  "+(sr/N).toFixed(2)+" Hz per bin",large?340:20,ly,10);
     }
     if(mouse[0]>=plot.x && mouse[0]<=plot.x+plot.w && mouse[1]>=plot.y && mouse[1]<=plot.y+plot.h) {
-        var f=10*Math.pow(plot.max/10,(mouse[0]-plot.x)/plot.w);
+        var f=plot.min*Math.pow(plot.max/plot.min,(mouse[0]-plot.x)/plot.w);
         line(mouse[0],plot.y,mouse[0],plot.y+plot.h,[0.9,0.94,0.96],0.4);
         text(f.toFixed(1)+" Hz",Math.min(w-90,mouse[0]+7),plot.y+plot.h-7,10,[0.9,0.94,0.96]);
     }

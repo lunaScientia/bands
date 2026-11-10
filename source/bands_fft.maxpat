@@ -871,6 +871,366 @@
           ],
           "text": "poke~ #1-spec6"
         }
+      },
+      {
+        "box": {
+          "id": "fft7_0",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            30.0,
+            1816.0,
+            170.0,
+            22.0
+          ],
+          "text": "fftin~ 15 hanning"
+        }
+      },
+      {
+        "box": {
+          "id": "sq7_0_0",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            1844.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "sq7_0_1",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            1872.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "fft7_1",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            30.0,
+            1900.0,
+            170.0,
+            22.0
+          ],
+          "text": "fftin~ 16 hanning"
+        }
+      },
+      {
+        "box": {
+          "id": "sq7_1_0",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            1928.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "sq7_1_1",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            1956.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "power7",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            1984.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~ 0.5"
+        }
+      },
+      {
+        "box": {
+          "id": "poke7",
+          "maxclass": "newobj",
+          "numinlets": 3,
+          "numoutlets": 0,
+          "patching_rect": [
+            30.0,
+            2012.0,
+            170.0,
+            22.0
+          ],
+          "text": "poke~ #1-spec7"
+        }
+      },
+      {
+        "box": {
+          "id": "fft8_0",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            30.0,
+            2040.0,
+            170.0,
+            22.0
+          ],
+          "text": "fftin~ 17 hanning"
+        }
+      },
+      {
+        "box": {
+          "id": "sq8_0_0",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2068.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "sq8_0_1",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2096.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "fft8_1",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            30.0,
+            2124.0,
+            170.0,
+            22.0
+          ],
+          "text": "fftin~ 18 hanning"
+        }
+      },
+      {
+        "box": {
+          "id": "sq8_1_0",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2152.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "sq8_1_1",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2180.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "power8",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2208.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~ 0.5"
+        }
+      },
+      {
+        "box": {
+          "id": "poke8",
+          "maxclass": "newobj",
+          "numinlets": 3,
+          "numoutlets": 0,
+          "patching_rect": [
+            30.0,
+            2236.0,
+            170.0,
+            22.0
+          ],
+          "text": "poke~ #1-spec8"
+        }
+      },
+      {
+        "box": {
+          "id": "fft9_0",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            30.0,
+            2264.0,
+            170.0,
+            22.0
+          ],
+          "text": "fftin~ 19 hanning"
+        }
+      },
+      {
+        "box": {
+          "id": "sq9_0_0",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2292.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "sq9_0_1",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2320.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "fft9_1",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            30.0,
+            2348.0,
+            170.0,
+            22.0
+          ],
+          "text": "fftin~ 20 hanning"
+        }
+      },
+      {
+        "box": {
+          "id": "sq9_1_0",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2376.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "sq9_1_1",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2404.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~"
+        }
+      },
+      {
+        "box": {
+          "id": "power9",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            30.0,
+            2432.0,
+            170.0,
+            22.0
+          ],
+          "text": "*~ 0.5"
+        }
+      },
+      {
+        "box": {
+          "id": "poke9",
+          "maxclass": "newobj",
+          "numinlets": 3,
+          "numoutlets": 0,
+          "patching_rect": [
+            30.0,
+            2460.0,
+            170.0,
+            22.0
+          ],
+          "text": "poke~ #1-spec9"
+        }
       }
     ],
     "lines": [
@@ -2046,6 +2406,510 @@
           ],
           "destination": [
             "poke6",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_0",
+            0
+          ],
+          "destination": [
+            "sq7_0_0",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_0",
+            0
+          ],
+          "destination": [
+            "sq7_0_0",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_0",
+            1
+          ],
+          "destination": [
+            "sq7_0_1",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_0",
+            1
+          ],
+          "destination": [
+            "sq7_0_1",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_1",
+            0
+          ],
+          "destination": [
+            "sq7_1_0",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_1",
+            0
+          ],
+          "destination": [
+            "sq7_1_0",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_1",
+            1
+          ],
+          "destination": [
+            "sq7_1_1",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_1",
+            1
+          ],
+          "destination": [
+            "sq7_1_1",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq7_0_0",
+            0
+          ],
+          "destination": [
+            "power7",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq7_0_1",
+            0
+          ],
+          "destination": [
+            "power7",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq7_1_0",
+            0
+          ],
+          "destination": [
+            "power7",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq7_1_1",
+            0
+          ],
+          "destination": [
+            "power7",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "power7",
+            0
+          ],
+          "destination": [
+            "poke7",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft7_0",
+            2
+          ],
+          "destination": [
+            "poke7",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_0",
+            0
+          ],
+          "destination": [
+            "sq8_0_0",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_0",
+            0
+          ],
+          "destination": [
+            "sq8_0_0",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_0",
+            1
+          ],
+          "destination": [
+            "sq8_0_1",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_0",
+            1
+          ],
+          "destination": [
+            "sq8_0_1",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_1",
+            0
+          ],
+          "destination": [
+            "sq8_1_0",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_1",
+            0
+          ],
+          "destination": [
+            "sq8_1_0",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_1",
+            1
+          ],
+          "destination": [
+            "sq8_1_1",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_1",
+            1
+          ],
+          "destination": [
+            "sq8_1_1",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq8_0_0",
+            0
+          ],
+          "destination": [
+            "power8",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq8_0_1",
+            0
+          ],
+          "destination": [
+            "power8",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq8_1_0",
+            0
+          ],
+          "destination": [
+            "power8",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq8_1_1",
+            0
+          ],
+          "destination": [
+            "power8",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "power8",
+            0
+          ],
+          "destination": [
+            "poke8",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft8_0",
+            2
+          ],
+          "destination": [
+            "poke8",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_0",
+            0
+          ],
+          "destination": [
+            "sq9_0_0",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_0",
+            0
+          ],
+          "destination": [
+            "sq9_0_0",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_0",
+            1
+          ],
+          "destination": [
+            "sq9_0_1",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_0",
+            1
+          ],
+          "destination": [
+            "sq9_0_1",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_1",
+            0
+          ],
+          "destination": [
+            "sq9_1_0",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_1",
+            0
+          ],
+          "destination": [
+            "sq9_1_0",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_1",
+            1
+          ],
+          "destination": [
+            "sq9_1_1",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_1",
+            1
+          ],
+          "destination": [
+            "sq9_1_1",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq9_0_0",
+            0
+          ],
+          "destination": [
+            "power9",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq9_0_1",
+            0
+          ],
+          "destination": [
+            "power9",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq9_1_0",
+            0
+          ],
+          "destination": [
+            "power9",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "sq9_1_1",
+            0
+          ],
+          "destination": [
+            "power9",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "power9",
+            0
+          ],
+          "destination": [
+            "poke9",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "fft9_0",
+            2
+          ],
+          "destination": [
+            "poke9",
             1
           ]
         }

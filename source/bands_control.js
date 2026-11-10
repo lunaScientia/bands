@@ -4,12 +4,15 @@ inlets = 1;
 outlets = 0;
 var uid = jsarguments[1];
 var sr = 48000;
-var edges = [30, 80, 250, 2500];
-var gains = [0, 0, 0, 0, 0], solos = [0, 0, 0, 0, 0], mutes = [0, 0, 0, 0, 0];
-var names = ["ULTRA LOW", "SUB", "BASS", "MIDS", "HIGHS"];
+var edges = [30, 80, 250, 2000, 4000, 6000, 12000];
+var names = ["ULTRA LOW", "SUB", "BASS", "MIDS", "HIGH-MIDS", "PRESENCE", "HIGH", "ULTRA HIGH"];
+var bandCount = names.length;
+var gains = [], solos = [], mutes = [];
+for(var b=0;b<bandCount;b++) {gains.push(0);solos.push(0);mutes.push(0);}
 function send(name, values) { messnamed(uid + "-" + name, values); }
 function view() { send("view", arrayfromargs(arguments)); }
 function coeff(f, rate) {
+    f = Math.min(f, rate * 0.49);
     var w = 2 * Math.PI * f / rate, c = Math.cos(w), s = Math.sin(w);
     var a = s / Math.sqrt(2), a0 = 1 + a, a1 = -2 * c / a0, a2 = (1 - a) / a0;
     return {lp: [(1-c)/2/a0, (1-c)/a0, (1-c)/2/a0, a1, a2],
@@ -17,37 +20,37 @@ function coeff(f, rate) {
             ap: [a2, a1, 1, a1, a2]};
 }
 function crossover(i, f) {
-    i = i|0; if (i < 0 || i > 3 || !isFinite(f)) return;
+    i = i|0; if (i < 0 || i >= edges.length || !isFinite(f)) return;
     edges[i] = f;
     var c = coeff(f, sr);
     send("lp"+i, c.lp); send("hp"+i, c.hp); send("ap"+i, c.ap);
-    view("edges", edges[0], edges[1], edges[2], edges[3]);
-    for (var k=0;k<5;k++) {
+    send("view", ["edges"].concat(edges));
+    for (var k=0;k<bandCount;k++) {
         var label = this.patcher.getnamed("range"+k);
-        if (label) label.message("set", k===0 ? "< "+hz(edges[0]) : k===4 ? "> "+hz(edges[3]) : hz(edges[k-1])+" - "+hz(edges[k]));
+        if (label) label.message("set", k===0 ? "< "+hz(edges[0]) : k===bandCount-1 ? "> "+hz(edges[edges.length-1]) : hz(edges[k-1])+" - "+hz(edges[k]));
     }
 }
 function hz(f) { return f >= 1000 ? (f/1000).toFixed(1)+"k" : Math.round(f)+" Hz"; }
 function samplerate(f) {
     if (f < 22050 || !isFinite(f)) return;
     sr = f;
-    for (var i=0;i<4;i++) crossover(i,edges[i]);
+    for (var i=0;i<edges.length;i++) crossover(i,edges[i]);
     view("samplerate", sr);
 }
 function mix() {
     var any = 0;
-    for (var i=0;i<5;i++) any += solos[i];
-    for (var j=0;j<5;j++) {
+    for (var i=0;i<bandCount;i++) any += solos[i];
+    for (var j=0;j<bandCount;j++) {
         var active = !mutes[j] && (!any || solos[j]);
         send("gain"+j, [active ? Math.pow(10,gains[j]/20) : 0, 25]);
         view("bandstate", j, gains[j], active ? 1 : 0);
     }
 }
-function gain(i,v) { gains[i|0]=Math.max(-60,Math.min(12,v)); mix(); }
+function gain(i,v) { i=i|0; if(i<0 || i>=bandCount || !isFinite(v))return; gains[i]=Math.max(-60,Math.min(12,v)); mix(); }
 // Only one listening mode may be active per band. "set" also updates the
 // stored Live parameter, without feeding another event back into this script.
 function solo(i,v) {
-    i=i|0; if(i<0 || i>=5) return;
+    i=i|0; if(i<0 || i>=bandCount) return;
     solos[i]=v?1:0;
     if(solos[i]) {
         mutes[i]=0;
@@ -56,7 +59,7 @@ function solo(i,v) {
     mix();
 }
 function mute(i,v) {
-    i=i|0; if(i<0 || i>=5) return;
+    i=i|0; if(i<0 || i>=bandCount) return;
     mutes[i]=v?1:0;
     if(mutes[i]) {
         solos[i]=0;
@@ -73,7 +76,7 @@ function command() {
     send("view",a);
 }
 function reset() {
-    for(var i=0;i<5;i++) {
+    for(var i=0;i<bandCount;i++) {
         this.patcher.getnamed("gain"+i).message(0);
         this.patcher.getnamed("solo"+i).message(0);
         this.patcher.getnamed("mute"+i).message(0);
@@ -82,11 +85,11 @@ function reset() {
     this.patcher.getnamed("original").message(0);
 }
 function init() {
-    for(var i=0;i<4;i++) crossover(i,edges[i]);
+    for(var i=0;i<edges.length;i++) crossover(i,edges[i]);
     // Read saved values after live.thisdevice. A bang would toggle live.text.
     var controls=["trim","original"];
-    for(var k=0;k<5;k++) controls.push("gain"+k,"solo"+k,"mute"+k);
-    for(var j=0;j<4;j++) controls.push("edge"+j);
+    for(var k=0;k<bandCount;k++) controls.push("gain"+k,"solo"+k,"mute"+k);
+    for(var j=0;j<edges.length;j++) controls.push("edge"+j);
     for(var n=0;n<controls.length;n++) this.patcher.getnamed(controls[n]).message("outputvalue");
     view("samplerate",sr);
 }
