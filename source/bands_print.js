@@ -15,7 +15,9 @@ function obj(name) {return this.patcher.getnamed(name);}
 function worker() {outlet(0, arrayfromargs(arguments));}
 function stopWorker() {workerReady=false;obj('printworker').message('script','stop');}
 function number(api, prop) {return Number(api.get(prop));}
-function string(api, prop) {return api.getstring(prop);}
+// getstring serializes Max atoms, adding quotes around names/paths with spaces.
+// Read the underlying string atom instead so those quotes never reach Live.
+function string(api, prop) {var a=api.get(prop);return a instanceof Array ? a.join(' ') : String(a);}
 function api(path) {return new LiveAPI(null, path);}
 function message(text) {
     text = String(text);
@@ -43,7 +45,7 @@ function edges() {
     }
     edgesNow = a;
 }
-function activeCapture() {return state === 'settle' || state === 'lead' || state === 'recording';}
+function activeCapture() {return state === 'settle' || state === 'lead' || state === 'starting' || state === 'recording';}
 function findOwner() {
     var a = api('this_device');
     for(var depth=0;depth<12 && a.id;depth++) {
@@ -116,7 +118,17 @@ function step() {
         }
         if(state === 'lead') {
             if(recordMs <= 0) throw Error('Disk recording did not start. Check the output folder and audio engine.');
-            song.call('start_playing'); state='recording'; started=Date.now(); lastPosition=config.preStart; lastTick=started;
+            song.call('start_playing'); started=Date.now(); lastPosition=config.preStart; lastTick=started;
+            schedule('starting',100);return;
+        }
+        if(state === 'starting') {
+            // Live applies transport commands asynchronously. Task.repeat() can
+            // run immediately, before is_playing reflects start_playing.
+            if(!number(song,'is_playing')) {
+                if(Date.now()-started>3000) throw Error('Playback did not start. Print cancelled.');
+                schedule('starting',100);return;
+            }
+            state='recording';
             watchdog.repeat(); message('Printing all 8 bands...');return;
         }
         if(state === 'flush') {schedule('split',120000);message('Writing eight WAV files...');worker('finish');return;}

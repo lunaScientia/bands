@@ -1,13 +1,14 @@
 # Changelog
 
-## v1.2.0 — in development
+## v1.2.0 — 2026-11-10
 
 - Added Print Bands to the dock and expanded window: capture all eight stereo bands in one playback pass over the Arrangement Loop brace, then create named, colored tracks with aligned audio clips.
 - Print taps are before listening gains, Solo/Mute, Original mode and Output Trim. Files preserve relative levels in 32-bit float; imported clips have Warp off. New print tracks are muted and do not inherit processing from the default Audio Track.
 - Added a shared multichannel disk capture with a host beat-phase channel for sample-boundary trimming, filter pre-roll, unique output directories and bounded streaming conversion. No whole-reference RAM buffer is allocated.
 - Added cancellation and checks for transport jumps, stopped audio, changed crossovers/sample rates, disk stalls, and oversized captures. Playback position and the Loop switch are restored after the operation.
 - Kept one frozen `.amxd` distribution. The disk worker is embedded directly with `node.codebox`; this version requires Max 9.1 or newer.
-- Added streaming audio and Live coordination regression checks. Native Max disk recording/channel fidelity passed; hosted Live integration verification is in progress.
+- Wait for Live's asynchronous playback start before monitoring capture; read string atoms directly so names and project paths do not acquire serialization quotes.
+- Added streaming audio and Live coordination regression checks. Native Max disk recording/channel fidelity and hosted Live printing/import at 48 kHz passed; see [verification details](README.md#status). This is not a long-session stability certification.
 
 ## v1.1.0 — 2026-11-10
 

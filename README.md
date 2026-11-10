@@ -2,11 +2,11 @@
 
 A Max for Live audio effect for inspecting and listening to eight frequency bands, with a focus on the low end.
 
-**[Download BANDS.amxd](https://github.com/lunaScientia/bands/releases/download/v1.1.0/BANDS.amxd)**
+**[Download BANDS.amxd](https://github.com/lunaScientia/bands/releases/download/v1.2.0/BANDS.amxd)**
 
 ## Install
 
-The current v1.2 development build requires Ableton Live with Max for Live and **Max 9.1 or newer** (including Live's bundled Max). The v1.1.0 release above remains available for older Max versions.
+Requires Ableton Live with Max for Live and **Max 9.1 or newer** (including Live's bundled Max). [v1.1.0](https://github.com/lunaScientia/bands/releases/tag/v1.1.0) remains available for older Max versions.
 
 1. Download `BANDS.amxd` using the link above, or open [`dist/Standalone/BANDS.amxd`](dist/Standalone/BANDS.amxd) and choose **Download raw file**.
 2. Drag the file onto an audio track in Live.
@@ -55,9 +55,13 @@ The audio is streamed to disk, not held in a song-sized RAM buffer. A temporary 
 
 ## Status
 
-**v1.2.0 is in development**, adding Print Bands. The published [v1.1.0 release](https://github.com/lunaScientia/bands/releases/tag/v1.1.0) adds the upper-frequency bands and a high-frequency spectrum view. The accepted five-band [v1.0.0 release](https://github.com/lunaScientia/bands/releases/tag/v1.0.0) remains available unchanged.
+**v1.2.0 adds Print Bands.** The published [v1.1.0 release](https://github.com/lunaScientia/bands/releases/tag/v1.1.0) and accepted five-band [v1.0.0 release](https://github.com/lunaScientia/bands/releases/tag/v1.0.0) remain available unchanged.
 
-Load v1.1.0 as a new device instance: it has eight bands and seven splits, so do not assume five-band presets or existing automation mappings will transfer. Keep v1.0.0 in older projects that need their original setup. The extra filters and analysis channels increase processing work; native Live CPU usage has not been measured.
+Native verification on 2026-11-10 used Live 12.4.6, bundled Max 9.1.5, and 48 kHz audio. A frozen device containing the production code plus a temporary test driver printed a synthetic stereo reference into eight correctly named, muted tracks. Every clip had Warp off, started at beat 2.25, ended at beat 3.75, and contained 56,320 frames. The printed 55 Hz, 140 Hz and 3.1 kHz tones matched the analytical crossover output at the expected sample position, with a maximum absolute error below 1.2e-8 on sampled comparison points. The final production `.amxd` also loaded independently and opened its expanded spectrum window. Test tracks were removed and the original transport/Loop state restored.
+
+Native checks cover short prints and import, not long-session stability, tempo automation, every supported host version, or memory use inside Live. A separate Node worker test split a 392 MB capture with under 55 MB peak RSS; this measures the worker only.
+
+Load the update as a new device instance. Eight-band versions have seven splits, so do not assume five-band presets or existing automation mappings will transfer. Keep v1.0.0 in older projects that need their original setup. The extra filters and analysis channels increase processing work; native Live CPU usage has not been benchmarked.
 
 Earlier steady-playback clicks and an unexpected Live exit have not been reproduced or proven fixed. Offline verification does not establish native audio performance or long-session stability; the release does not claim those reports are resolved.
 
