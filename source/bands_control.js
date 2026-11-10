@@ -22,6 +22,7 @@ function coeff(f, rate) {
 function crossover(i, f) {
     i = i|0; if (i < 0 || i >= edges.length || !isFinite(f)) return;
     edges[i] = f;
+    send('print-command', ['edges'].concat(edges));
     var c = coeff(f, sr);
     send("lp"+i, c.lp); send("hp"+i, c.hp); send("ap"+i, c.ap);
     send("view", ["edges"].concat(edges));
@@ -34,6 +35,7 @@ function hz(f) { return f >= 1000 ? (f/1000).toFixed(1)+"k" : Math.round(f)+" Hz
 function samplerate(f) {
     if (f < 22050 || !isFinite(f)) return;
     sr = f;
+    send('print-command', ['samplerate', sr]);
     for (var i=0;i<edges.length;i++) crossover(i,edges[i]);
     view("samplerate", sr);
 }
@@ -73,6 +75,7 @@ function command() {
     var a=arrayfromargs(arguments);
     if (a[0]==="expand") {send("open","front");return;}
     if (a[0]==="reset") {reset();return;}
+    if (a[0]==="print") {send('print-command','print');return;}
     send("view",a);
 }
 function reset() {

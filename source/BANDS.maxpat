@@ -2,9 +2,9 @@
   "patcher": {
     "fileversion": 1,
     "appversion": {
-      "major": 8,
-      "minor": 6,
-      "revision": 5,
+      "major": 9,
+      "minor": 1,
+      "revision": 0,
       "architecture": "x64",
       "modernui": 1
     },
@@ -79,13 +79,110 @@
       },
       {
         "box": {
+          "id": "printcontrol",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 2,
+          "patching_rect": [
+            870,
+            220,
+            250,
+            22
+          ],
+          "text": "js bands_print.js ---bands"
+        }
+      },
+      {
+        "box": {
+          "id": "printbus",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            1150,
+            220,
+            250,
+            22
+          ],
+          "text": "r ---bands-print-command"
+        }
+      },
+      {
+        "box": {
+          "id": "printworker",
+          "maxclass": "node.codebox",
+          "numinlets": 1,
+          "numoutlets": 2,
+          "patching_rect": [
+            1430,
+            220,
+            250,
+            22
+          ],
+          "varname": "printworker",
+          "code": "// Node for Max: bounded disk I/O only. No DSP, network, npm or Live API here.\n'use strict';\nconst fs = require('fs');\nconst path = require('path');\nconst NAMES = ['Ultra Low', 'Sub', 'Bass', 'Mids', 'High-Mids', 'Presence', 'High', 'Ultra High'];\nconst CHANNELS = 17; // eight stereo bands, then the sample-synchronous host beat phase\nconst BLOCK = 8192;\nconst MAX_BYTES = 3 * 1024 ** 3;\n\nfunction nativePath(s) {\n    s = String(s || '');\n    // Max's macOS path convention: \"Macintosh HD:/path/to/file\".\n    if (process.platform === 'darwin' && /^[^/:]+:\\//.test(s)) {\n        const colon = s.indexOf(':');\n        const relative = s.slice(colon + 1);\n        const volume = '/Volumes/' + s.slice(0, colon) + relative;\n        return fs.existsSync(volume) ? volume : relative;\n    }\n    return s;\n}\nfunction safeName(s) {\n    return String(s).replace(/[\\x00-\\x1f<>:\"/\\\\|?*]/g, '_').replace(/[. ]+$/g, '').slice(0, 70) || 'Reference';\n}\nfunction ranges(edges, rate) {\n    const cuts = edges.map(f => Math.min(f, rate * .49));\n    return NAMES.map((name, i) => name + ' ' + (i ? cuts[i - 1] : 0) + '-' + (i < 7 ? cuts[i] : rate / 2) + ' Hz');\n}\nfunction prepare(config) {\n    if (!Number.isFinite(config.rate) || config.rate < 22050 || config.rate > 384000 ||\n        !Number.isFinite(config.start) || config.start < 0 || !Number.isFinite(config.length) || config.length <= 0 ||\n        !Number.isFinite(config.preStart) || config.preStart < 0 || config.preStart > config.start || config.preStart % 1 ||\n        !Array.isArray(config.edges) || config.edges.length !== 7 ||\n        config.edges.some((f, i) => !Number.isFinite(f) || f <= 0 || (i && f <= config.edges[i - 1]))) {\n        throw Error('Invalid print range, sample rate or crossovers.');\n    }\n    let base = nativePath(config.folder);\n    if (!base && config.setPath) base = path.join(path.dirname(nativePath(config.setPath)), 'Samples', 'Processed', 'BANDS');\n    if (!path.isAbsolute(base)) throw Error('Choose an output folder first.');\n    fs.mkdirSync(base, {recursive: true});\n    const folder = fs.mkdtempSync(path.join(base, 'BANDS-' + safeName(config.reference) + '-'));\n    const labels = ranges(config.edges, config.rate);\n    const files = labels.map((label, i) => path.join(folder, String(i + 1).padStart(2, '0') + ' ' + safeName(label) + '.wav'));\n    const job = {...config, folder, labels, files, raw: path.join(folder, '.capture.wav')};\n    fs.writeFileSync(path.join(folder, 'print.json'), JSON.stringify({version: '1.2.0', ...config, labels}, null, 2));\n    return job;\n}\nfunction readExactly(fd, length, position) {\n    const b = Buffer.alloc(length);\n    let n = 0;\n    while (n < length) {\n        const got = fs.readSync(fd, b, n, length - n, position + n);\n        if (!got) throw Error('Incomplete capture file.');\n        n += got;\n    }\n    return b;\n}\nfunction waveInfo(fd) {\n    const size = fs.fstatSync(fd).size;\n    const head = readExactly(fd, 12, 0);\n    if (head.toString('ascii', 0, 4) !== 'RIFF' || head.toString('ascii', 8) !== 'WAVE') throw Error('Capture is not a WAV file.');\n    let fmt, data;\n    for (let p = 12; p + 8 <= size;) {\n        const h = readExactly(fd, 8, p), tag = h.toString('ascii', 0, 4), n = h.readUInt32LE(4);\n        if (p + 8 + n > size) throw Error('Capture is still being written or disk is full.');\n        if (tag === 'fmt ') {\n            if (n < 16 || n > 4096) throw Error('Invalid WAV format.');\n            const b = readExactly(fd, n, p + 8);\n            let format = b.readUInt16LE(0);\n            if (format === 65534 && n >= 40) format = b.readUInt16LE(24);\n            fmt = {format, channels: b.readUInt16LE(2), rate: b.readUInt32LE(4), align: b.readUInt16LE(12), bits: b.readUInt16LE(14)};\n        }\n        if (tag === 'data') {data = {offset: p + 8, bytes: n}; break;}\n        p += 8 + n + (n % 2);\n    }\n    if (!fmt || !data || fmt.format !== 3 || fmt.bits !== 32 || fmt.align !== fmt.channels * 4 || !data.bytes || data.bytes % fmt.align) {\n        throw Error('Expected a complete 32-bit float WAV capture.');\n    }\n    return {...fmt, ...data, frames: data.bytes / fmt.align};\n}\nfunction waveHeader(channels, rate, frames) {\n    // IEEE float WAV with the mandatory fact chunk; avoids normalization/clipping.\n    const h = Buffer.alloc(56), bytes = frames * channels * 4;\n    h.write('RIFF'); h.writeUInt32LE(48 + bytes, 4); h.write('WAVEfmt ', 8);\n    h.writeUInt32LE(16, 16); h.writeUInt16LE(3, 20); h.writeUInt16LE(channels, 22);\n    h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * channels * 4, 28);\n    h.writeUInt16LE(channels * 4, 32); h.writeUInt16LE(32, 34);\n    h.write('fact', 36); h.writeUInt32LE(4, 40); h.writeUInt32LE(frames, 44);\n    h.write('data', 48); h.writeUInt32LE(bytes, 52);\n    return h;\n}\nfunction writeAll(fd, b, length = b.length, position = null) {\n    let n = 0;\n    while (n < length) n += fs.writeSync(fd, b, n, length - n, position === null ? null : position + n);\n}\nconst yieldIO = () => new Promise(resolve => setImmediate(resolve));\n\n// Find both boundaries from a recorded plugphasor~ channel, not JS timers.\n// Integer pre-roll position anchors the unwrapped quarter-note phase.\nasync function findRange(fd, info, job, cancelled) {\n    let previous = 0, beat = job.preStart, moving = false, first = -1, last = -1;\n    const b = Buffer.alloc(BLOCK * info.align), end = job.start + job.length;\n    for (let base = 0; base < info.frames; base += BLOCK) {\n        if (cancelled()) throw Error('Print cancelled.');\n        const count = Math.min(BLOCK, info.frames - base);\n        const got = fs.readSync(fd, b, 0, count * info.align, info.offset + base * info.align);\n        if (got !== count * info.align) throw Error('Incomplete capture.');\n        for (let i = 0; i < count; i++) {\n            const phase = b.readFloatLE(i * info.align + 64), frame = base + i;\n            if (!Number.isFinite(phase) || phase < 0 || phase > 1) throw Error('Invalid host clock.');\n            if (!moving) {\n                if (phase === 0) continue;\n                // Recording must begin while transport is stopped at an integer beat.\n                if (phase > .01 || frame < 2) throw Error('Host clock did not start from the requested pre-roll position.');\n                moving = true;\n                // At song start, retain the sample at phase zero immediately before\n                // the first positive phase. No leading stopped-transport silence.\n                if (job.start === job.preStart) first = frame - 1;\n            } else {\n                let step = phase - previous;\n                if (step < -.5) {beat++; step++;}\n                if (step <= 0 || step > .005) throw Error('Transport stopped or jumped during the print.');\n            }\n            const position = beat + phase;\n            // Half-sample tolerance selects the nearest sample to a beat boundary.\n            // Bias exact half-sample ties forward; float32 phase quantization must\n            // not make start and end choose opposite sides of the same tie.\n            const epsilon = moving && previous !== 0 ? Math.max(0, Math.min(.0001, ((phase - previous + 1) % 1) * .5) - 1e-7) : 0;\n            if (first < 0 && position + epsilon >= job.start) first = frame;\n            if (position + epsilon >= end) {last = frame; break;}\n            previous = phase;\n        }\n        if (last >= 0) break;\n        await yieldIO();\n    }\n    if (first < 0 || last <= first) throw Error('Capture ended before the complete Loop range was recorded.');\n    return {first, last, frames: last - first};\n}\nasync function split(job, cancelled = () => false, progress = () => {}) {\n    const input = fs.openSync(job.raw, 'r'), handles = [], parts = [];\n    try {\n        const info = waveInfo(input);\n        if (info.channels !== CHANNELS || info.rate !== job.rate) throw Error('Capture channel count or sample rate changed.');\n        const range = await findRange(input, info, job, cancelled);\n        const inputBuffer = Buffer.alloc(BLOCK * info.align);\n        const output = NAMES.map(() => Buffer.alloc(BLOCK * 8));\n        for (const file of job.files) {\n            const part = file + '.part';\n            handles.push(fs.openSync(part, 'wx')); parts.push(part);\n            writeAll(handles[handles.length - 1], waveHeader(2, info.rate, range.frames));\n        }\n        let lastProgress = 0;\n        for (let done = 0; done < range.frames; done += BLOCK) {\n            if (cancelled()) throw Error('Print cancelled.');\n            const count = Math.min(BLOCK, range.frames - done);\n            if (fs.readSync(input, inputBuffer, 0, count * info.align, info.offset + (range.first + done) * info.align) !== count * info.align) throw Error('Incomplete capture.');\n            for (let band = 0; band < 8; band++) {\n                for (let frame = 0; frame < count; frame++) {\n                    const start = frame * info.align + band * 8;\n                    inputBuffer.copy(output[band], frame * 8, start, start + 8);\n                }\n                writeAll(handles[band], output[band], count * 8);\n            }\n            if (Date.now() - lastProgress > 150) {progress(Math.floor(100 * (done + count) / range.frames)); lastProgress = Date.now();}\n            await yieldIO();\n        }\n        for (const fd of handles) {fs.fsyncSync(fd); fs.closeSync(fd);}\n        handles.length = 0;\n        if (cancelled()) throw Error('Print cancelled.');\n        for (let i = 0; i < parts.length; i++) fs.renameSync(parts[i], job.files[i]);\n        const result = {files: job.files, labels: job.labels, folder: job.folder, rate: info.rate, frames: range.frames, first: range.first, last: range.last};\n        fs.writeFileSync(path.join(job.folder, 'result.json'), JSON.stringify(result, null, 2));\n        fs.unlinkSync(job.raw);\n        return result;\n    } finally {\n        fs.closeSync(input);\n        for (const fd of handles) fs.closeSync(fd);\n        for (const part of parts) {try {fs.unlinkSync(part);} catch (_) {}}\n    }\n}\nfunction discard(job) {\n    // Only remove our temporary capture; completed WAVs are never deleted.\n    if (job) {try {fs.unlinkSync(job.raw);} catch (_) {}}\n}\nmodule.exports = {prepare, split, waveInfo, waveHeader, findRange, safeName, nativePath, MAX_BYTES};\n\nif (process.env.MAX_ENV) {\n    const max = require('max-api');\n    let job = null, busy = false, cancelled = false;\n    max.addHandler('prepare', json => {\n        if (busy || job) return max.outlet('failed', 'Previous print is still finishing.');\n        try {cancelled = false; job = prepare(JSON.parse(json)); max.outlet('prepared', job.raw, job.folder);}\n        catch (e) {max.outlet('failed', e.message);}\n    });\n    max.addHandler('finish', async () => {\n        if (!job || busy) return;\n        busy = true;\n        try {\n            const result = await split(job, () => cancelled, value => max.outlet('progress', value));\n            max.outlet('finished', JSON.stringify(result));\n        } catch (e) {max.outlet('failed', e.message);}\n        finally {discard(job); job = null; busy = false;}\n    });\n    max.addHandler('cancel', () => {\n        cancelled = true;\n        if (!busy) {discard(job); job = null; max.outlet('cancelled');}\n    });\n    max.addHandler('ping', () => max.outlet('ready'));\n    max.outlet('ready');\n}\n",
+          "saved_object_attributes": {
+            "autostart": 0,
+            "defer": 1,
+            "watch": 0,
+            "restart": 0
+          }
+        }
+      },
+      {
+        "box": {
+          "id": "printdialog",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 2,
+          "patching_rect": [
+            30,
+            285,
+            250,
+            22
+          ],
+          "text": "opendialog fold"
+        }
+      },
+      {
+        "box": {
+          "id": "printfoldermsg",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            310,
+            285,
+            250,
+            22
+          ],
+          "text": "prepend folder"
+        }
+      },
+      {
+        "box": {
+          "id": "printdialogcancel",
+          "maxclass": "message",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            590,
+            285,
+            250,
+            22
+          ],
+          "text": "foldercancel"
+        }
+      },
+      {
+        "box": {
           "id": "viewbus",
           "maxclass": "newobj",
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
             870,
-            220,
+            285,
             250,
             22
           ],
@@ -100,7 +197,7 @@
           "numoutlets": 1,
           "patching_rect": [
             1150,
-            220,
+            285,
             250,
             22
           ],
@@ -143,7 +240,7 @@
           "numoutlets": 1,
           "patching_rect": [
             1430,
-            220,
+            285,
             250,
             22
           ],
@@ -158,7 +255,7 @@
           "numoutlets": 1,
           "patching_rect": [
             30,
-            285,
+            350,
             250,
             22
           ],
@@ -173,7 +270,7 @@
           "numoutlets": 3,
           "patching_rect": [
             310,
-            285,
+            350,
             250,
             22
           ],
@@ -188,7 +285,7 @@
           "numoutlets": 1,
           "patching_rect": [
             590,
-            285,
+            350,
             250,
             22
           ],
@@ -203,7 +300,7 @@
           "numoutlets": 2,
           "patching_rect": [
             870,
-            285,
+            350,
             250,
             22
           ],
@@ -218,7 +315,7 @@
           "numoutlets": 1,
           "patching_rect": [
             1150,
-            285,
+            350,
             250,
             22
           ],
@@ -233,7 +330,7 @@
           "numoutlets": 1,
           "patching_rect": [
             1430,
-            285,
+            350,
             250,
             22
           ],
@@ -248,7 +345,7 @@
           "numoutlets": 1,
           "patching_rect": [
             30,
-            350,
+            415,
             250,
             22
           ],
@@ -263,7 +360,7 @@
           "numoutlets": 6,
           "patching_rect": [
             310,
-            350,
+            415,
             250,
             22
           ],
@@ -278,11 +375,26 @@
           "numoutlets": 1,
           "patching_rect": [
             590,
-            350,
+            415,
             250,
             22
           ],
           "text": "prepend samplerate"
+        }
+      },
+      {
+        "box": {
+          "id": "printdsp",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            870,
+            415,
+            250,
+            22
+          ],
+          "text": "prepend dspstate"
         }
       },
       {
@@ -361,8 +473,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            350,
+            1150,
+            415,
             250,
             22
           ],
@@ -376,8 +488,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
-            350,
+            1430,
+            415,
             250,
             22
           ],
@@ -391,8 +503,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            350,
+            30,
+            480,
             250,
             22
           ],
@@ -444,8 +556,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            415,
+            310,
+            480,
             250,
             22
           ],
@@ -459,8 +571,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            415,
+            590,
+            480,
             250,
             22
           ],
@@ -474,8 +586,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            415,
+            870,
+            480,
             250,
             22
           ],
@@ -527,8 +639,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            415,
+            1150,
+            480,
             250,
             22
           ],
@@ -542,8 +654,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
-            415,
+            1430,
+            480,
             250,
             22
           ],
@@ -557,8 +669,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            415,
+            30,
+            545,
             250,
             22
           ],
@@ -610,8 +722,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            480,
+            310,
+            545,
             250,
             22
           ],
@@ -625,8 +737,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            480,
+            590,
+            545,
             250,
             22
           ],
@@ -640,8 +752,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            480,
+            870,
+            545,
             250,
             22
           ],
@@ -693,8 +805,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            480,
+            1150,
+            545,
             250,
             22
           ],
@@ -708,8 +820,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
-            480,
+            1430,
+            545,
             250,
             22
           ],
@@ -723,8 +835,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            480,
+            30,
+            610,
             250,
             22
           ],
@@ -776,8 +888,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            545,
+            310,
+            610,
             250,
             22
           ],
@@ -791,8 +903,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            545,
+            590,
+            610,
             250,
             22
           ],
@@ -806,8 +918,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            545,
+            870,
+            610,
             250,
             22
           ],
@@ -859,8 +971,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            545,
+            1150,
+            610,
             250,
             22
           ],
@@ -874,8 +986,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
-            545,
+            1430,
+            610,
             250,
             22
           ],
@@ -889,8 +1001,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            545,
+            30,
+            675,
             250,
             22
           ],
@@ -1045,8 +1157,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            610,
+            310,
+            675,
             250,
             22
           ],
@@ -1134,8 +1246,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            610,
+            590,
+            675,
             250,
             22
           ],
@@ -1223,8 +1335,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            610,
+            870,
+            675,
             250,
             22
           ],
@@ -1379,8 +1491,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            610,
+            1150,
+            675,
             250,
             22
           ],
@@ -1468,8 +1580,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            610,
+            1430,
+            675,
             250,
             22
           ],
@@ -1557,8 +1669,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            610,
+            30,
+            740,
             250,
             22
           ],
@@ -1713,8 +1825,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            675,
+            310,
+            740,
             250,
             22
           ],
@@ -1802,8 +1914,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            675,
+            590,
+            740,
             250,
             22
           ],
@@ -1891,8 +2003,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            675,
+            870,
+            740,
             250,
             22
           ],
@@ -2047,8 +2159,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            675,
+            1150,
+            740,
             250,
             22
           ],
@@ -2136,8 +2248,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            675,
+            1430,
+            740,
             250,
             22
           ],
@@ -2225,8 +2337,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            675,
+            30,
+            805,
             250,
             22
           ],
@@ -2381,8 +2493,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            740,
+            310,
+            805,
             250,
             22
           ],
@@ -2470,8 +2582,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            740,
+            590,
+            805,
             250,
             22
           ],
@@ -2559,8 +2671,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            740,
+            870,
+            805,
             250,
             22
           ],
@@ -2715,8 +2827,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            740,
+            1150,
+            805,
             250,
             22
           ],
@@ -2804,8 +2916,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            740,
+            1430,
+            805,
             250,
             22
           ],
@@ -2893,8 +3005,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            740,
+            30,
+            870,
             250,
             22
           ],
@@ -3049,8 +3161,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            805,
+            310,
+            870,
             250,
             22
           ],
@@ -3138,8 +3250,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            805,
+            590,
+            870,
             250,
             22
           ],
@@ -3227,8 +3339,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            805,
+            870,
+            870,
             250,
             22
           ],
@@ -3383,8 +3495,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
+            1150,
             870,
-            805,
             250,
             22
           ],
@@ -3472,8 +3584,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            805,
+            1430,
+            870,
             250,
             22
           ],
@@ -3561,8 +3673,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            805,
+            30,
+            935,
             250,
             22
           ],
@@ -3646,8 +3758,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            870,
+            310,
+            935,
             250,
             22
           ],
@@ -3723,8 +3835,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            870,
+            590,
+            935,
             250,
             22
           ],
@@ -3762,8 +3874,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
             870,
+            935,
             250,
             22
           ],
@@ -3772,22 +3884,22 @@
       },
       {
         "box": {
-          "id": "tip",
+          "id": "printstatus",
           "maxclass": "comment",
           "numinlets": 1,
           "numoutlets": 0,
           "patching_rect": [
             547,
             149,
-            420,
+            450,
             16
           ],
-          "text": "BANDS 1.1.0  /  S = solo  /  M = mute  /  24 dB/oct",
+          "text": "Print Loop -> 8 tracks / pre-gain",
           "presentation": 1,
           "presentation_rect": [
             547,
             149,
-            420,
+            450,
             16
           ],
           "textcolor": [
@@ -3797,8 +3909,88 @@
             1
           ],
           "fontsize": 9,
-          "varname": "tip",
+          "varname": "printstatus",
           "ignoreclick": 1
+        }
+      },
+      {
+        "box": {
+          "id": "printbutton",
+          "maxclass": "textbutton",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            1005,
+            148,
+            110,
+            17
+          ],
+          "text": "Print Bands",
+          "presentation": 1,
+          "presentation_rect": [
+            1005,
+            148,
+            110,
+            17
+          ],
+          "parameter_enable": 0,
+          "fontsize": 9,
+          "varname": "printbutton"
+        }
+      },
+      {
+        "box": {
+          "id": "printbuttonclick",
+          "maxclass": "message",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            1150,
+            935,
+            250,
+            22
+          ],
+          "text": "print"
+        }
+      },
+      {
+        "box": {
+          "id": "printfolder",
+          "maxclass": "textbutton",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            1120,
+            148,
+            79,
+            17
+          ],
+          "text": "Folder...",
+          "presentation": 1,
+          "presentation_rect": [
+            1120,
+            148,
+            79,
+            17
+          ],
+          "parameter_enable": 0,
+          "fontsize": 9,
+          "varname": "printfolder"
+        }
+      },
+      {
+        "box": {
+          "id": "printfolderclick",
+          "maxclass": "message",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            1430,
+            935,
+            250,
+            22
+          ],
+          "text": "choosefolder"
         }
       },
       {
@@ -3808,8 +4000,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            870,
+            30,
+            1000,
             250,
             22
           ],
@@ -3823,8 +4015,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            870,
+            310,
+            1000,
             250,
             22
           ],
@@ -3838,8 +4030,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            870,
+            590,
+            1000,
             250,
             22
           ],
@@ -3853,8 +4045,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            935,
+            870,
+            1000,
             250,
             22
           ],
@@ -3868,8 +4060,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            935,
+            1150,
+            1000,
             250,
             22
           ],
@@ -3883,8 +4075,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            935,
+            1430,
+            1000,
             250,
             22
           ],
@@ -3898,8 +4090,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            935,
+            30,
+            1065,
             250,
             22
           ],
@@ -3913,8 +4105,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            935,
+            310,
+            1065,
             250,
             22
           ],
@@ -3928,8 +4120,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            935,
+            590,
+            1065,
             250,
             22
           ],
@@ -3943,8 +4135,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1000,
+            870,
+            1065,
             250,
             22
           ],
@@ -3958,8 +4150,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1000,
+            1150,
+            1065,
             250,
             22
           ],
@@ -3973,8 +4165,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1000,
+            1430,
+            1065,
             250,
             22
           ],
@@ -3988,8 +4180,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1000,
+            30,
+            1130,
             250,
             22
           ],
@@ -4003,8 +4195,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1000,
+            310,
+            1130,
             250,
             22
           ],
@@ -4018,8 +4210,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1000,
+            590,
+            1130,
             250,
             22
           ],
@@ -4033,8 +4225,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1065,
+            870,
+            1130,
             250,
             22
           ],
@@ -4048,8 +4240,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1065,
+            1150,
+            1130,
             250,
             22
           ],
@@ -4063,8 +4255,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1065,
+            1430,
+            1130,
             250,
             22
           ],
@@ -4078,8 +4270,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1065,
+            30,
+            1195,
             250,
             22
           ],
@@ -4093,8 +4285,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1065,
+            310,
+            1195,
             250,
             22
           ],
@@ -4108,8 +4300,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1065,
+            590,
+            1195,
             250,
             22
           ],
@@ -4123,8 +4315,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1130,
+            870,
+            1195,
             250,
             22
           ],
@@ -4138,8 +4330,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1130,
+            1150,
+            1195,
             250,
             22
           ],
@@ -4153,8 +4345,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1130,
+            1430,
+            1195,
             250,
             22
           ],
@@ -4168,8 +4360,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1130,
+            30,
+            1260,
             250,
             22
           ],
@@ -4183,8 +4375,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1130,
+            310,
+            1260,
             250,
             22
           ],
@@ -4198,8 +4390,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1130,
+            590,
+            1260,
             250,
             22
           ],
@@ -4213,8 +4405,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1195,
+            870,
+            1260,
             250,
             22
           ],
@@ -4228,8 +4420,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1195,
+            1150,
+            1260,
             250,
             22
           ],
@@ -4243,8 +4435,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1195,
+            1430,
+            1260,
             250,
             22
           ],
@@ -4258,8 +4450,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1195,
+            30,
+            1325,
             250,
             22
           ],
@@ -4273,8 +4465,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1195,
+            310,
+            1325,
             250,
             22
           ],
@@ -4288,8 +4480,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1195,
+            590,
+            1325,
             250,
             22
           ],
@@ -4303,8 +4495,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1260,
+            870,
+            1325,
             250,
             22
           ],
@@ -4318,8 +4510,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1260,
+            1150,
+            1325,
             250,
             22
           ],
@@ -4333,8 +4525,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1260,
+            1430,
+            1325,
             250,
             22
           ],
@@ -4348,8 +4540,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1260,
+            30,
+            1390,
             250,
             22
           ],
@@ -4363,8 +4555,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1260,
+            310,
+            1390,
             250,
             22
           ],
@@ -4378,8 +4570,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1260,
+            590,
+            1390,
             250,
             22
           ],
@@ -4393,8 +4585,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1325,
+            870,
+            1390,
             250,
             22
           ],
@@ -4408,8 +4600,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1325,
+            1150,
+            1390,
             250,
             22
           ],
@@ -4423,8 +4615,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1325,
+            1430,
+            1390,
             250,
             22
           ],
@@ -4438,8 +4630,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1325,
+            30,
+            1455,
             250,
             22
           ],
@@ -4453,8 +4645,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1325,
+            310,
+            1455,
             250,
             22
           ],
@@ -4468,8 +4660,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1325,
+            590,
+            1455,
             250,
             22
           ],
@@ -4483,8 +4675,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1390,
+            870,
+            1455,
             250,
             22
           ],
@@ -4498,8 +4690,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1390,
+            1150,
+            1455,
             250,
             22
           ],
@@ -4513,8 +4705,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1390,
+            1430,
+            1455,
             250,
             22
           ],
@@ -4528,8 +4720,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1390,
+            30,
+            1520,
             250,
             22
           ],
@@ -4543,8 +4735,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1390,
+            310,
+            1520,
             250,
             22
           ],
@@ -4558,8 +4750,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1390,
+            590,
+            1520,
             250,
             22
           ],
@@ -4573,8 +4765,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1455,
+            870,
+            1520,
             250,
             22
           ],
@@ -4588,8 +4780,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1455,
+            1150,
+            1520,
             250,
             22
           ],
@@ -4603,8 +4795,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1455,
+            1430,
+            1520,
             250,
             22
           ],
@@ -4618,8 +4810,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1455,
+            30,
+            1585,
             250,
             22
           ],
@@ -4633,8 +4825,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1455,
+            310,
+            1585,
             250,
             22
           ],
@@ -4648,8 +4840,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1455,
+            590,
+            1585,
             250,
             22
           ],
@@ -4663,8 +4855,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1520,
+            870,
+            1585,
             250,
             22
           ],
@@ -4678,8 +4870,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1520,
+            1150,
+            1585,
             250,
             22
           ],
@@ -4693,8 +4885,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1520,
+            1430,
+            1585,
             250,
             22
           ],
@@ -4708,8 +4900,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1520,
+            30,
+            1650,
             250,
             22
           ],
@@ -4723,8 +4915,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1520,
+            310,
+            1650,
             250,
             22
           ],
@@ -4738,8 +4930,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1520,
+            590,
+            1650,
             250,
             22
           ],
@@ -4753,8 +4945,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1585,
+            870,
+            1650,
             250,
             22
           ],
@@ -4768,8 +4960,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1585,
+            1150,
+            1650,
             250,
             22
           ],
@@ -4783,8 +4975,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1585,
+            1430,
+            1650,
             250,
             22
           ],
@@ -4798,8 +4990,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1585,
+            30,
+            1715,
             250,
             22
           ],
@@ -4813,8 +5005,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1585,
+            310,
+            1715,
             250,
             22
           ],
@@ -4828,8 +5020,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1585,
+            590,
+            1715,
             250,
             22
           ],
@@ -4843,8 +5035,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1650,
+            870,
+            1715,
             250,
             22
           ],
@@ -4858,8 +5050,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1650,
+            1150,
+            1715,
             250,
             22
           ],
@@ -4873,8 +5065,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1650,
+            1430,
+            1715,
             250,
             22
           ],
@@ -4888,8 +5080,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1650,
+            30,
+            1780,
             250,
             22
           ],
@@ -4903,8 +5095,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1650,
+            310,
+            1780,
             250,
             22
           ],
@@ -4918,8 +5110,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1650,
+            590,
+            1780,
             250,
             22
           ],
@@ -4933,8 +5125,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1715,
+            870,
+            1780,
             250,
             22
           ],
@@ -4948,8 +5140,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1715,
+            1150,
+            1780,
             250,
             22
           ],
@@ -4963,8 +5155,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1715,
+            1430,
+            1780,
             250,
             22
           ],
@@ -4978,8 +5170,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1715,
+            30,
+            1845,
             250,
             22
           ],
@@ -4993,8 +5185,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1715,
+            310,
+            1845,
             250,
             22
           ],
@@ -5008,8 +5200,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1715,
+            590,
+            1845,
             250,
             22
           ],
@@ -5023,8 +5215,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1780,
+            870,
+            1845,
             250,
             22
           ],
@@ -5038,8 +5230,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1780,
+            1150,
+            1845,
             250,
             22
           ],
@@ -5053,8 +5245,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1780,
+            1430,
+            1845,
             250,
             22
           ],
@@ -5068,8 +5260,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1780,
+            30,
+            1910,
             250,
             22
           ],
@@ -5083,8 +5275,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1780,
+            310,
+            1910,
             250,
             22
           ],
@@ -5098,8 +5290,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1780,
+            590,
+            1910,
             250,
             22
           ],
@@ -5113,8 +5305,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1845,
+            870,
+            1910,
             250,
             22
           ],
@@ -5128,8 +5320,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1845,
+            1150,
+            1910,
             250,
             22
           ],
@@ -5143,8 +5335,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1845,
+            1430,
+            1910,
             250,
             22
           ],
@@ -5158,8 +5350,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1845,
+            30,
+            1975,
             250,
             22
           ],
@@ -5173,8 +5365,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1845,
+            310,
+            1975,
             250,
             22
           ],
@@ -5188,8 +5380,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1845,
+            590,
+            1975,
             250,
             22
           ],
@@ -5203,8 +5395,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1910,
+            870,
+            1975,
             250,
             22
           ],
@@ -5218,8 +5410,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1910,
+            1150,
+            1975,
             250,
             22
           ],
@@ -5233,8 +5425,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1910,
+            1430,
+            1975,
             250,
             22
           ],
@@ -5248,8 +5440,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1910,
+            30,
+            2040,
             250,
             22
           ],
@@ -5263,8 +5455,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1910,
+            310,
+            2040,
             250,
             22
           ],
@@ -5278,8 +5470,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1910,
+            590,
+            2040,
             250,
             22
           ],
@@ -5293,8 +5485,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            1975,
+            870,
+            2040,
             250,
             22
           ],
@@ -5308,8 +5500,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            1975,
+            1150,
+            2040,
             250,
             22
           ],
@@ -5323,8 +5515,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            1975,
+            1430,
+            2040,
             250,
             22
           ],
@@ -5338,8 +5530,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            1975,
+            30,
+            2105,
             250,
             22
           ],
@@ -5353,8 +5545,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            1975,
+            310,
+            2105,
             250,
             22
           ],
@@ -5368,8 +5560,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1975,
+            590,
+            2105,
             250,
             22
           ],
@@ -5383,8 +5575,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2040,
+            870,
+            2105,
             250,
             22
           ],
@@ -5398,8 +5590,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2040,
+            1150,
+            2105,
             250,
             22
           ],
@@ -5413,8 +5605,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2040,
+            1430,
+            2105,
             250,
             22
           ],
@@ -5428,8 +5620,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            2040,
+            30,
+            2170,
             250,
             22
           ],
@@ -5443,8 +5635,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2040,
+            310,
+            2170,
             250,
             22
           ],
@@ -5458,8 +5650,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2040,
+            590,
+            2170,
             250,
             22
           ],
@@ -5473,8 +5665,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2105,
+            870,
+            2170,
             250,
             22
           ],
@@ -5488,8 +5680,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2105,
+            1150,
+            2170,
             250,
             22
           ],
@@ -5503,8 +5695,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2105,
+            1430,
+            2170,
             250,
             22
           ],
@@ -5518,8 +5710,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            2105,
+            30,
+            2235,
             250,
             22
           ],
@@ -5533,8 +5725,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2105,
+            310,
+            2235,
             250,
             22
           ],
@@ -5548,8 +5740,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2105,
+            590,
+            2235,
             250,
             22
           ],
@@ -5563,8 +5755,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2170,
+            870,
+            2235,
             250,
             22
           ],
@@ -5578,12 +5770,73 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2170,
+            1150,
+            2235,
             250,
             22
           ],
           "text": "biquad~ 0.29289321881345248 -0.58578643762690497 0.29289321881345248 -7.1738148582371984e-17 0.17157287525380996"
+        }
+      },
+      {
+        "box": {
+          "id": "printrec",
+          "maxclass": "newobj",
+          "numinlets": 17,
+          "numoutlets": 1,
+          "patching_rect": [
+            1430,
+            2235,
+            250,
+            22
+          ],
+          "text": "sfrecord~ 17 262144 @beginramp 0 @endramp 0",
+          "varname": "printrec"
+        }
+      },
+      {
+        "box": {
+          "id": "printphase",
+          "maxclass": "newobj",
+          "numinlets": 0,
+          "numoutlets": 1,
+          "patching_rect": [
+            30,
+            2300,
+            250,
+            22
+          ],
+          "text": "plugphasor~"
+        }
+      },
+      {
+        "box": {
+          "id": "printtime",
+          "maxclass": "newobj",
+          "numinlets": 2,
+          "numoutlets": 1,
+          "patching_rect": [
+            310,
+            2300,
+            250,
+            22
+          ],
+          "text": "snapshot~ 100"
+        }
+      },
+      {
+        "box": {
+          "id": "printtimemsg",
+          "maxclass": "newobj",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            590,
+            2300,
+            250,
+            22
+          ],
+          "text": "prepend recorded"
         }
       },
       {
@@ -5593,8 +5846,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2170,
+            870,
+            2300,
             250,
             22
           ],
@@ -5608,8 +5861,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            870,
-            2170,
+            1150,
+            2300,
             250,
             22
           ],
@@ -5623,8 +5876,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2170,
+            1430,
+            2300,
             250,
             22
           ],
@@ -5638,8 +5891,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1430,
-            2170,
+            30,
+            2365,
             250,
             22
           ],
@@ -5653,8 +5906,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2235,
+            310,
+            2365,
             250,
             22
           ],
@@ -5668,8 +5921,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            2235,
+            590,
+            2365,
             250,
             22
           ],
@@ -5683,8 +5936,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2235,
+            870,
+            2365,
             250,
             22
           ],
@@ -5698,8 +5951,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            870,
-            2235,
+            1150,
+            2365,
             250,
             22
           ],
@@ -5713,8 +5966,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2235,
+            1430,
+            2365,
             250,
             22
           ],
@@ -5728,8 +5981,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1430,
-            2235,
+            30,
+            2430,
             250,
             22
           ],
@@ -5743,8 +5996,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2300,
+            310,
+            2430,
             250,
             22
           ],
@@ -5758,8 +6011,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            2300,
+            590,
+            2430,
             250,
             22
           ],
@@ -5773,8 +6026,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2300,
+            870,
+            2430,
             250,
             22
           ],
@@ -5788,8 +6041,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            870,
-            2300,
+            1150,
+            2430,
             250,
             22
           ],
@@ -5803,8 +6056,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2300,
+            1430,
+            2430,
             250,
             22
           ],
@@ -5818,8 +6071,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1430,
-            2300,
+            30,
+            2495,
             250,
             22
           ],
@@ -5833,8 +6086,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2365,
+            310,
+            2495,
             250,
             22
           ],
@@ -5848,8 +6101,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            2365,
+            590,
+            2495,
             250,
             22
           ],
@@ -5863,8 +6116,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2365,
+            870,
+            2495,
             250,
             22
           ],
@@ -5878,8 +6131,8 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            870,
-            2365,
+            1150,
+            2495,
             250,
             22
           ],
@@ -5893,8 +6146,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2365,
+            1430,
+            2495,
             250,
             22
           ],
@@ -5908,8 +6161,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2365,
+            30,
+            2560,
             250,
             22
           ],
@@ -5923,8 +6176,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2430,
+            310,
+            2560,
             250,
             22
           ],
@@ -5938,8 +6191,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2430,
+            590,
+            2560,
             250,
             22
           ],
@@ -5953,8 +6206,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2430,
+            870,
+            2560,
             250,
             22
           ],
@@ -5968,8 +6221,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            2430,
+            1150,
+            2560,
             250,
             22
           ],
@@ -5983,8 +6236,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2430,
+            1430,
+            2560,
             250,
             22
           ],
@@ -5998,8 +6251,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2430,
+            30,
+            2625,
             250,
             22
           ],
@@ -6013,8 +6266,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2495,
+            310,
+            2625,
             250,
             22
           ],
@@ -6028,8 +6281,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2495,
+            590,
+            2625,
             250,
             22
           ],
@@ -6043,8 +6296,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2495,
+            870,
+            2625,
             250,
             22
           ],
@@ -6058,8 +6311,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            2495,
+            1150,
+            2625,
             250,
             22
           ],
@@ -6073,8 +6326,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2495,
+            1430,
+            2625,
             250,
             22
           ],
@@ -6088,8 +6341,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2495,
+            30,
+            2690,
             250,
             22
           ],
@@ -6103,8 +6356,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2560,
+            310,
+            2690,
             250,
             22
           ],
@@ -6118,8 +6371,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2560,
+            590,
+            2690,
             250,
             22
           ],
@@ -6133,8 +6386,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2560,
+            870,
+            2690,
             250,
             22
           ],
@@ -6148,8 +6401,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            2560,
+            1150,
+            2690,
             250,
             22
           ],
@@ -6163,8 +6416,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2560,
+            1430,
+            2690,
             250,
             22
           ],
@@ -6178,8 +6431,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2560,
+            30,
+            2755,
             250,
             22
           ],
@@ -6193,8 +6446,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
-            2625,
+            310,
+            2755,
             250,
             22
           ],
@@ -6208,8 +6461,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
-            2625,
+            590,
+            2755,
             250,
             22
           ],
@@ -6223,8 +6476,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
-            2625,
+            870,
+            2755,
             250,
             22
           ],
@@ -6238,8 +6491,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
-            2625,
+            1150,
+            2755,
             250,
             22
           ],
@@ -6253,8 +6506,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
-            2625,
+            1430,
+            2755,
             250,
             22
           ],
@@ -6268,8 +6521,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            1430,
-            2625,
+            30,
+            2820,
             250,
             22
           ],
@@ -6283,8 +6536,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            30,
-            2690,
+            310,
+            2820,
             250,
             22
           ],
@@ -6298,8 +6551,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            2690,
+            590,
+            2820,
             250,
             22
           ],
@@ -6313,8 +6566,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            590,
-            2690,
+            870,
+            2820,
             250,
             22
           ],
@@ -6328,8 +6581,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            870,
-            2690,
+            1150,
+            2820,
             250,
             22
           ],
@@ -6343,8 +6596,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
-            2690,
+            1430,
+            2820,
             250,
             22
           ],
@@ -6358,8 +6611,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            1430,
-            2690,
+            30,
+            2885,
             250,
             22
           ],
@@ -6373,8 +6626,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            30,
-            2755,
+            310,
+            2885,
             250,
             22
           ],
@@ -6388,8 +6641,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            310,
-            2755,
+            590,
+            2885,
             250,
             22
           ],
@@ -6403,8 +6656,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            590,
-            2755,
+            870,
+            2885,
             250,
             22
           ],
@@ -6418,8 +6671,8 @@
           "numinlets": 20,
           "numoutlets": 0,
           "patching_rect": [
-            870,
-            2755,
+            1150,
+            2885,
             250,
             22
           ],
@@ -6433,8 +6686,8 @@
           "numinlets": 1,
           "numoutlets": 0,
           "patching_rect": [
-            1150,
-            2755,
+            1430,
+            2885,
             250,
             22
           ],
@@ -6443,9 +6696,9 @@
           "patcher": {
             "fileversion": 1,
             "appversion": {
-              "major": 8,
-              "minor": 6,
-              "revision": 5,
+              "major": 9,
+              "minor": 1,
+              "revision": 0,
               "architecture": "x64",
               "modernui": 1
             },
@@ -6744,6 +6997,102 @@
       {
         "patchline": {
           "source": [
+            "printbus",
+            0
+          ],
+          "destination": [
+            "printcontrol",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printcontrol",
+            0
+          ],
+          "destination": [
+            "printworker",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printworker",
+            0
+          ],
+          "destination": [
+            "printcontrol",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printcontrol",
+            1
+          ],
+          "destination": [
+            "printdialog",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printdialog",
+            0
+          ],
+          "destination": [
+            "printfoldermsg",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printfoldermsg",
+            0
+          ],
+          "destination": [
+            "printcontrol",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printdialog",
+            1
+          ],
+          "destination": [
+            "printdialogcancel",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printdialogcancel",
+            0
+          ],
+          "destination": [
+            "printcontrol",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
             "cmd",
             0
           ],
@@ -6893,6 +7242,30 @@
           ],
           "destination": [
             "control",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "dsp",
+            0
+          ],
+          "destination": [
+            "printdsp",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printdsp",
+            0
+          ],
+          "destination": [
+            "printcontrol",
             0
           ]
         }
@@ -7896,6 +8269,54 @@
       {
         "patchline": {
           "source": [
+            "printbutton",
+            0
+          ],
+          "destination": [
+            "printbuttonclick",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printbuttonclick",
+            0
+          ],
+          "destination": [
+            "printcontrol",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printfolder",
+            0
+          ],
+          "destination": [
+            "printfolderclick",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printfolderclick",
+            0
+          ],
+          "destination": [
+            "printcontrol",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
             "in",
             0
           ],
@@ -10241,6 +10662,246 @@
           ],
           "destination": [
             "1hp6b",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0comp0_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1comp0_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            1
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0comp1_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            2
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1comp1_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            3
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0comp2_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            4
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1comp2_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            5
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0comp3_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            6
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1comp3_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            7
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0comp4_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            8
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1comp4_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            9
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0comp5_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            10
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1comp5_6",
+            0
+          ],
+          "destination": [
+            "printrec",
+            11
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0lp6b",
+            0
+          ],
+          "destination": [
+            "printrec",
+            12
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1lp6b",
+            0
+          ],
+          "destination": [
+            "printrec",
+            13
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "0hp6b",
+            0
+          ],
+          "destination": [
+            "printrec",
+            14
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "1hp6b",
+            0
+          ],
+          "destination": [
+            "printrec",
+            15
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printphase",
+            0
+          ],
+          "destination": [
+            "printrec",
+            16
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printrec",
+            0
+          ],
+          "destination": [
+            "printtime",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printtime",
+            0
+          ],
+          "destination": [
+            "printtimemsg",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printtimemsg",
+            0
+          ],
+          "destination": [
+            "printcontrol",
             0
           ]
         }
@@ -11637,6 +12298,11 @@
     "dependency_cache": [
       {
         "name": "bands_control.js",
+        "type": "TEXT",
+        "implicit": 1
+      },
+      {
+        "name": "bands_print.js",
         "type": "TEXT",
         "implicit": 1
       },

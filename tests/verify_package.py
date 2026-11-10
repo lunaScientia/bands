@@ -37,7 +37,11 @@ while position < len(collective):
     assert 16 <= offset < footer_offset and offset + size <= footer_offset
     entries[name] = collective[offset:offset+size]
 
-assert set(entries) == {'BANDS.amxd', 'bands_control.js', 'bands_view.js', 'bands_fft.maxpat'}
+assert set(entries) == {'BANDS.amxd', 'bands_control.js', 'bands_view.js', 'bands_fft.maxpat', 'bands_print.js'}
+main = json.loads(entries['BANDS.amxd'].rstrip(b'\0'))['patcher']
+worker = next(w['box'] for w in main['boxes'] if w['box']['id'] == 'printworker')
+assert worker['maxclass'] == 'node.codebox'
+assert worker['code'] == (ROOT/'source/bands_print_worker.js').read_text()
 for name, payload in entries.items():
     if name == 'BANDS.amxd':
         expected = (ROOT / 'dist/BANDS.amxd').read_bytes()[32:]

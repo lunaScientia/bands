@@ -3,7 +3,7 @@
 import json, math, pathlib, struct, shutil
 ROOT=pathlib.Path(__file__).resolve().parent
 SRC=ROOT/'source'; DIST=ROOT/'dist'
-VERSION='1.1.0'
+VERSION='1.2.0'
 COLORS=[[.69,.53,1,1],[.30,.64,1,1],[.22,.85,.76,1],[.94,.72,.36,1],
         [.98,.57,.32,1],[.95,.43,.49,1],[.90,.48,.79,1],[.66,.78,.97,1]]
 EDGES=[30,80,250,2000,4000,6000,12000]
@@ -15,7 +15,7 @@ WIDTH=1340
 
 class Patch:
     def __init__(self, width=WIDTH, height=169, presentation=0):
-        self.p={'fileversion':1,'appversion':{'major':8,'minor':6,'revision':5,'architecture':'x64','modernui':1},
+        self.p={'fileversion':1,'appversion':{'major':9,'minor':1,'revision':0,'architecture':'x64','modernui':1},
                 'classnamespace':'box','rect':[80.,100.,float(width),float(height)],
                 'openrect':[0.,0.,float(width),float(height)],'openinpresentation':presentation,
                 'default_fontsize':11.,'default_fontname':'Arial','bgcolor':[.065,.085,.105,1.],
@@ -48,6 +48,17 @@ def build():
                digest='BANDS — eight-band spectrum and listening',tags='audio analysis spectrum crossover bass')
     p.obj('in','plugin~',2,2,rect=[30,200,70,22]);p.obj('out','plugout~',2,2)
     p.obj('control','js bands_control.js #0',1,0)
+    p.obj('printcontrol','js bands_print.js #0',1,2)
+    p.obj('printbus','r #0-print-command');p.wire('printbus','printcontrol')
+    # node.codebox embeds its executable source directly. A node.script pointing
+    # at a TEXT entry in a collective cannot reliably materialize that file.
+    p.box('printworker','node.codebox',ins=1,outs=2,varname='printworker',
+          code=(SRC/'bands_print_worker.js').read_text(),
+          saved_object_attributes={'autostart':0,'defer':1,'watch':0,'restart':0})
+    p.wire('printcontrol','printworker');p.wire('printworker','printcontrol')
+    p.obj('printdialog','opendialog fold',1,2);p.wire('printcontrol','printdialog',1)
+    p.obj('printfoldermsg','prepend folder');p.wire('printdialog','printfoldermsg');p.wire('printfoldermsg','printcontrol')
+    p.box('printdialogcancel','message',text='foldercancel');p.wire('printdialog','printdialogcancel',1);p.wire('printdialogcancel','printcontrol')
     p.obj('viewbus','r #0-view');p.obj('cmd','r #0-command');p.wire('cmd','control')
     p.box('view','jsui',rect=[0,0,530,143],pres=[0,0,530,143],filename='bands_view.js',jsarguments=['#0',0],
           parameter_enable=0,border=0)
@@ -59,6 +70,7 @@ def build():
     # Standalone patch initialization; live.thisdevice re-bangs restored Live state later.
     p.obj('load','loadbang');p.obj('loaddefer','deferlow');p.wire('load','loaddefer');p.wire('loaddefer','init')
     p.obj('dsp','dspstate~',1,6);p.obj('sr','prepend samplerate');p.wire('dsp','sr',1);p.wire('sr','control')
+    p.obj('printdsp','prepend dspstate');p.wire('dsp','printdsp');p.wire('printdsp','printcontrol')
     p.wire('init','dsp',1)
     params={}; ordered=[]
     def parameter(id,cls,long,short,lo,hi,initial,units,rect,color=None,enum=None,**kw):
@@ -102,7 +114,10 @@ def build():
     route('original','original')
     p.box('reset','textbutton',text='Reset mix',rect=[output_x,148,99,17],pres=[output_x,148,99,17],outs=3,parameter_enable=0,fontsize=9)
     p.box('resetmsg','message',text='command reset');p.wire('reset','resetmsg');p.wire('resetmsg','control')
-    comment('tip','BANDS '+VERSION+'  /  S = solo  /  M = mute  /  24 dB/oct',[547,149,420,16],size=9)
+    comment('printstatus','Print Loop -> 8 tracks / pre-gain',[547,149,450,16],size=9)
+    for id,label,x,w,selector in [('printbutton','Print Bands',1005,110,'print'),('printfolder','Folder...',1120,79,'choosefolder')]:
+        p.box(id,'textbutton',text=label,rect=[x,148,w,17],pres=[x,148,w,17],outs=3,parameter_enable=0,fontsize=9,varname=id)
+        p.box(id+'click','message',text=selector);p.wire(id,id+'click');p.wire(id+'click','printcontrol')
     # LR4 splits. Every earlier branch gets the all-pass of each later split.
     for i in range(len(EDGES)):
         for kind in ['lp','hp','ap']:p.obj('r'+kind+str(i),'r #0-'+kind+str(i))
@@ -120,6 +135,14 @@ def build():
             for j in range(i+1,len(EDGES)):low=bq(f'{ch}comp{i}_{j}',low,'ap',j)
             bands[ch].append(low);high=next_high
         bands[ch].append(high)
+    # One interleaved stream guarantees identical sample boundaries for all bands.
+    # The last channel records Live's sample-synchronous beat phase for trimming.
+    p.obj('printrec','sfrecord~ 17 262144 @beginramp 0 @endramp 0',17,1,varname='printrec')
+    for i in range(BAND_COUNT):
+        for ch in range(2):p.wire(bands[ch][i][0],'printrec',bands[ch][i][1],i*2+ch)
+    p.obj('printphase','plugphasor~',0,1);p.wire('printphase','printrec',0,16)
+    p.obj('printtime','snapshot~ 100',2,1);p.wire('printrec','printtime')
+    p.obj('printtimemsg','prepend recorded');p.wire('printtime','printtimemsg');p.wire('printtimemsg','printcontrol')
     for i in range(BAND_COUNT):
         p.obj('gainr'+str(i),'r #0-gain'+str(i));p.obj('gainline'+str(i),'line~ 1.',2,2)
         p.wire('gainr'+str(i),'gainline'+str(i))
@@ -173,6 +196,7 @@ def build():
             ('Mute',[n+' Mute' for n in NAMES]),
             ('Output',['Output Trim','Listen to Original']+['-']*6)])},'inherited_shortname':1}
     p.p['dependency_cache']=[{'name':'bands_control.js','type':'TEXT','implicit':1},
+                              {'name':'bands_print.js','type':'TEXT','implicit':1},
                               {'name':'bands_view.js','type':'TEXT','implicit':1},
                               {'name':'bands_fft.maxpat','type':'JSON','implicit':1}]
     p.p['project']={'version':1,'amxdtype':1633771873,'autoorganize':0,'hideprojectwindow':1,
@@ -198,7 +222,7 @@ def build():
     data=(json.dumps({'patcher':p.p},indent=2)+'\n').encode()+b'\0'
     amxd=b'ampf'+struct.pack('<I',4)+b'aaaa'+b'meta'+struct.pack('<II',4,0)+b'ptch'+struct.pack('<I',len(data))+data
     (DIST/'BANDS.amxd').write_bytes(amxd)
-    for file in ['bands_control.js','bands_view.js','bands_fft.maxpat']:shutil.copy2(SRC/file,DIST/file)
+    for file in ['bands_control.js','bands_view.js','bands_fft.maxpat','bands_print.js','bands_print_worker.js']:shutil.copy2(SRC/file,DIST/file)
     print('Built',DIST/'BANDS.amxd',len(amxd),'bytes;',len(p.p['boxes']),'objects')
     from freeze_device import freeze
     freeze(DIST/'BANDS.amxd', DIST/'Standalone/BANDS.amxd')

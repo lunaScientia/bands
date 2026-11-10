@@ -68,6 +68,13 @@ for ch in range(2):
     for i in range(BAND_COUNT):
         assert any(l['patchline']['source']==[f'weighted{ch}_{i}',0] and l['patchline']['destination']==[f'sum{ch}',0] for l in patch['lines'])
         assert any(l['patchline']['source']==[f'gainline{i}',0] and l['patchline']['destination']==[f'weighted{ch}_{i}',1] for l in patch['lines'])
+        source=next(l['patchline']['source'] for l in patch['lines']
+                    if l['patchline']['destination']==[f'weighted{ch}_{i}',0])
+        assert any(l['patchline']['source']==source and l['patchline']['destination']==['printrec',2*i+ch] for l in patch['lines'])
+assert boxes['printrec']['text']=='sfrecord~ 17 262144 @beginramp 0 @endramp 0'
+assert any(l['patchline']['source']==['printphase',0] and l['patchline']['destination']==['printrec',16] for l in patch['lines'])
+assert boxes['printworker']['maxclass']=='node.codebox'
+assert boxes['printworker']['code']==(ROOT/'source/bands_print_worker.js').read_text()
 # Verify the actual initial coefficients embedded in every native biquad.
 for id,b in boxes.items():
     if not b.get('text','').startswith('biquad~'):continue

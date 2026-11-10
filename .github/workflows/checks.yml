@@ -26,6 +26,10 @@ jobs:
         run: python3 tests/verify.py
       - name: Check solo and mute control behavior
         run: node tests/controller.js
+      - name: Check band printing and Live coordination
+        run: |
+          node tests/print_worker.js
+          node tests/print_controller.js
       - name: Check renderer state and allocations
         run: node --expose-gc tests/renderer.js
       - name: Check frozen package

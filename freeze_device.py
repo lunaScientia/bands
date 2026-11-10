@@ -8,6 +8,7 @@ import struct
 
 ROOT = Path(__file__).resolve().parent
 DEPENDENCIES = [('bands_control.js', b'TEXT'), ('bands_view.js', b'TEXT'),
+                ('bands_print.js', b'TEXT'),
                 ('bands_fft.maxpat', b'JSON')]
 
 
