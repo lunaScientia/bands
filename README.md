@@ -2,7 +2,7 @@
 
 A Max for Live audio effect for inspecting and listening to eight frequency bands, with a focus on the low end.
 
-**[Download BANDS.amxd](https://github.com/lunaScientia/bands/releases/download/v1.2.0/BANDS.amxd)**
+**[Download BANDS.amxd](https://github.com/lunaScientia/bands/releases/download/v1.3.0/BANDS.amxd)**
 
 ## Install
 
@@ -21,7 +21,8 @@ The device is a single frozen `.amxd` file with its scripts and FFT patch embedd
 - Input, output, and individual band spectrum curves.
 - Low-end, full-range, and high-frequency spectrum views; expanded window, display Hold, and input reference Capture.
 - Original listening mode to bypass the crossover mix.
-- Print Bands: record the Arrangement Loop range into eight aligned stereo WAVs, then create and name the corresponding tracks automatically.
+- Split File: quickly split the selected reference's source file into eight named audio tracks without playing the song.
+- Optional Track: live mode records the Arrangement Loop with upstream processing included.
 
 | Band | Default range |
 | --- | --- |
@@ -38,28 +39,44 @@ Click the frequency-range button to cycle **10–500 Hz → 10 Hz–20 kHz → 2
 
 The LR4-style crossover uses 24 dB/octave filters with all-pass phase compensation. At unity band gains, the summed magnitude is flat; phase is altered. Original mode does not loudness-match a modified mix.
 
-## Print Bands (v1.2)
+## Split File — fast, default mode (v1.3)
+
+1. Put BANDS on the reference track and select its audio clip. If the track contains just one Arrangement clip, BANDS can find it automatically.
+2. Set the crossover frequencies and leave the mode on **File: fast**.
+3. Click **Split File** in the device or expanded window. Eight named, colored tracks appear at the end of the track list, with Warp off and their track activators off (muted).
+
+This mode processes the **entire original source file**, at its original sample rate. Clip cropping, Loop brace, Warp, pitch, clip gain, automation and track effects are not rendered. The full-file results start at the selected Arrangement clip's position; for a Session clip, they start at the Arrangement Loop start. It does not start, stop or seek playback. Crossovers are snapshotted when you click; listening gains, Solo/Mute, Original and Output Trim do not affect the files. Mono sources become identical left/right stereo channels.
+
+WAV and AIFF PCM/float files are read directly in bounded chunks. On macOS, other formats such as MP3 use the built-in Core Audio converter before splitting; no extra installation is needed. On other platforms, convert compressed sources to PCM WAV or AIFF first. Sources must be mono/stereo and between 22.05 and 384 kHz. Outputs are 32-bit float with no normalization. There is a 3 GiB limit per output WAV; use a shorter exported source for larger files.
+
+In a native Live test, a four-minute stereo WAV became eight tracks in **14.5 seconds total**. File processing alone took 4.6 seconds in a separate worker benchmark. These are measurements on the test machine, not a fixed timing guarantee.
+
+For a saved Set, output goes under `Samples/Processed/BANDS/` beside the Set, in a unique folder. **Folder…** chooses another location; an unsaved Set asks for one. WAVs remain on disk if import is interrupted. Use Collect All and Save when moving a Set that references files outside its project folder.
+
+## Print Loop — real-time track recording (v1.2)
 
 1. Put BANDS on the reference's audio track, after any processing you want included.
 2. Set the **Arrangement Loop brace** to the section to print. The Loop playback switch can be on or off.
-3. Set the crossover frequencies, then click **Print Bands** in the device or expanded window.
+3. Click the mode button to choose **Track: live**, set the crossover frequencies, then click **Print Loop** in the device or expanded window.
 4. Wait for one playback pass plus file writing. Eight audio tracks appear at the end of the track list, with matching names, frequencies, colors, and clip positions.
 
 All eight bands are captured **before band gain, Solo, Mute, Original mode and Output Trim**. Devices before BANDS are included; devices after it and the track fader are not. Printed files use stereo 32-bit float, with no normalization or recording fades. Warp and looping are disabled on the imported clips. New tracks start **muted** so they do not double the existing mix; enable a track when you want to listen to it. Any effects from the user's default Audio Track are removed from these newly created print tracks.
 
 For a saved Set, WAVs go beside the Set under `Samples/Processed/BANDS/`, in a new folder for each print. **Folder…** selects another location; an unsaved Set asks for a folder on the first print. A small metadata file records the print range and crossover settings. Use Live's Collect All and Save if you later move a Set whose printed samples are outside its project folder.
 
-Printing temporarily stops playback, disables looping and plays from a short pre-roll before the selected section to warm the crossover filters. It restores the previous Loop switch and song position afterwards, and resumes playback if it was running before. Click **Cancel Print** to abort. Stopping or seeking during capture, changing crossovers or changing the sample rate cancels that capture. Finish Arrangement/Session recording, return to Arrangement playback, and disable Link before printing.
+Printing temporarily stops playback, disables looping and plays from a short pre-roll before the selected section to warm the crossover filters. It restores the previous Loop switch and song position afterwards, and resumes playback if it was running before. Click **Cancel** to abort. Stopping or seeking during capture, changing crossovers or changing the sample rate cancels that capture. Finish Arrangement/Session recording, return to Arrangement playback, and disable Link before printing.
 
 The audio is streamed to disk, not held in a song-sized RAM buffer. A temporary 17-channel WAV contains the eight stereo bands and a sample-synchronous host beat clock; the worker uses that clock to trim all bands to the same boundaries, writes the eight files in bounded chunks, then removes the temporary capture. During conversion, disk usage is roughly twice the final audio size. Very long ranges are limited to keep the temporary capture below the standard WAV size limit; print those in sections. At the very start of the song, no earlier audio is available to warm the filters.
 
 ## Status
 
-**v1.2.0 adds Print Bands.** The published [v1.1.0 release](https://github.com/lunaScientia/bands/releases/tag/v1.1.0) and accepted five-band [v1.0.0 release](https://github.com/lunaScientia/bands/releases/tag/v1.0.0) remain available unchanged.
+**v1.3.0 makes offline file splitting the default.** Previous releases remain available unchanged.
+
+Native v1.3 verification on Live 12.4.6 / Max 9.1.5 passed for a four-minute WAV and an MP3 source. Both created eight named, muted, unwarped tracks without moving the transport. The WAV outputs each contained 11,520,000 frames at 48 kHz. A full stereo comparison of a test fragment against the native crossover capture differed by at most 1.87e-9. The four-minute worker benchmark used 63.2 MB peak RSS, with about 19.1 MB growth; this measures the worker, not all of Live.
 
 Native verification on 2026-11-10 used Live 12.4.6, bundled Max 9.1.5, and 48 kHz audio. A frozen device containing the production code plus a temporary test driver printed a synthetic stereo reference into eight correctly named, muted tracks. Every clip had Warp off, started at beat 2.25, ended at beat 3.75, and contained 56,320 frames. The printed 55 Hz, 140 Hz and 3.1 kHz tones matched the analytical crossover output at the expected sample position, with a maximum absolute error below 1.2e-8 on sampled comparison points. The final production `.amxd` also loaded independently and opened its expanded spectrum window. Test tracks were removed and the original transport/Loop state restored.
 
-Native checks cover short prints and import, not long-session stability, tempo automation, every supported host version, or memory use inside Live. A separate Node worker test split a 392 MB capture with under 55 MB peak RSS; this measures the worker only.
+Native checks cover these file splits, short real-time prints and import, not long-session stability, tempo automation, every supported host version, or memory use inside Live. A separate v1.2 Node worker test split a 392 MB capture with under 55 MB peak RSS; this measures the worker only.
 
 Load the update as a new device instance. Eight-band versions have seven splits, so do not assume five-band presets or existing automation mappings will transfer. Keep v1.0.0 in older projects that need their original setup. The extra filters and analysis channels increase processing work; native Live CPU usage has not been benchmarked.
 
@@ -77,6 +94,7 @@ python3 tests/verify.py
 python3 tests/verify_package.py
 node tests/controller.js
 node tests/print_worker.js
+node tests/offline_worker.js
 node tests/print_controller.js
 node --expose-gc tests/renderer.js
 ```
@@ -93,8 +111,9 @@ The build produces a development bundle under `dist/` and the distributable sing
 | `tests/controller.js` | Solo/mute state, parameter synchronization, and original filter coefficients |
 | `tests/renderer.js` | Renderer scheduling, state bounds, and simulated heap checks |
 | `source/bands_print.js` | Live transport, print lifecycle, track creation, and clip import |
-| `source/bands_print_worker.js` | Streaming WAV validation, beat-clock trimming, and stereo file output; embedded as `node.codebox` |
+| `source/bands_print_worker.js` | Offline crossover DSP, source decoding, beat-clock trimming and streaming file output; embedded as `node.codebox` |
 | `tests/print_worker.js` | Sample boundaries, stereo channel fidelity, WAV formats, and cancellation |
+| `tests/offline_worker.js` | File formats, mono/stereo behavior, native coefficients, block continuity and cancellation |
 | `tests/print_controller.js` | Deferred Live operations, transport restoration, and failure handling |
 | `tests/fixtures/v1-original/` | Original audio implementation for regression comparison |
 | `dist/Standalone/BANDS.amxd` | Installable device |

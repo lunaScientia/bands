@@ -1,16 +1,18 @@
 // Exercise the actual Max JS coordinator with a deferred, stateful Live API.
 const fs=require('fs'), vm=require('vm'), assert=require('assert/strict');
 const source=fs.readFileSync('source/bands_print.js','utf8');
-function harness(overrides={}) {
+function harness(overrides={}, mode='live') {
     const writes=[], messages=[], queue=[], worker=[], tasks=[], tracks=[], clips=[];
     let now=0, ctx;
     const song={id:1,type:'Song',record_mode:0,session_record:0,back_to_arranger:0,is_ableton_link_enabled:0,
         loop_start:8.25,loop_length:2.5,tempo:120,file_path:'/tmp/Reference Project/Test Set.als',current_song_time:15,loop:1,is_playing:1,...overrides};
     const owner={id:2,type:'Track',name:'Reference',is_frozen:0,info:'function create_audio_clip'};
+    const sourceClip={id:4,type:'Clip',name:'Reference File',file_path:'/tmp/Reference source.wav',is_audio_clip:1,is_arrangement_clip:1,start_time:3.25};
     tracks.push(owner);
     function resolve(path) {
         if(path==='live_set')return song;
         if(path==='this_device')return {id:3,type:'MaxDevice'};
+        if(path==='live_set view detail_clip' || path==='id 4')return sourceClip;
         if(path.startsWith('live_set tracks '))return tracks[Number(path.split(' ').pop())];
         if(path.startsWith('id '))return tracks.concat(clips).find(x=>x.id===Number(path.slice(3)));
         throw Error('Unknown Live path: '+path);
@@ -50,10 +52,11 @@ function harness(overrides={}) {
         cancel(){this.pending=false;}
         repeat(){this.pending=true;}
     }
-    const objects={};for(const name of ['printstatus','printbutton','printworker','printrec'])objects[name]={message:(...args)=>messages.push([name,...args])};
+    const objects={};for(const name of ['printstatus','printbutton','printmode','printworker','printrec'])objects[name]={message:(...args)=>messages.push([name,...args])};
     ctx={jsarguments:['bands_print.js','test'],LiveAPI,Task,Date:{now:()=>now},arrayfromargs:a=>Array.from(a),
         outlet:(port,args)=>{worker.push([port,...(Array.isArray(args)?args:[args])]);},messnamed:()=>{},patcher:{getnamed:n=>{assert(objects[n],n);return objects[n];}}};
     vm.createContext(ctx);vm.runInContext(source,ctx);ctx.dspstate(1);ctx.samplerate(48000);
+    ctx.sourceMode=mode;
     return {ctx,tracks,clips,song,writes,messages,worker,elapse:ms=>{now+=ms;},flush:()=>{while(queue.length)queue.shift()();},step:()=>{tasks[0].pending=false;ctx.step();},advance:(pos,ms=100)=>{now+=ms;song.current_song_time=pos;ctx.recorded(now);ctx.watch();}};
 }
 function start(h) {
@@ -106,5 +109,18 @@ const unsaved=harness({file_path:''});unsaved.ctx.print();assert.equal(unsaved.c
 const stalled=harness({is_playing:0});
 stalled.ctx.print();stalled.ctx.ready();stalled.ctx.prepared('/tmp/raw.wav','/tmp/BANDS-test');stalled.step();stalled.ctx.recorded(200);stalled.step();
 assert.equal(stalled.ctx.state,'starting');stalled.elapse(3100);stalled.step();assert.equal(stalled.ctx.state,'cancel');assert.match(stalled.ctx.lastStatus,/Playback did not start/);
+// File splitting neither starts nor stops Live, even with DSP off and Link on.
+const fast=harness({is_ableton_link_enabled:1,back_to_arranger:1},'file');fast.ctx.dspstate(0);
+fast.ctx.print();assert.equal(fast.ctx.state,'worker');fast.ctx.ready();assert.equal(fast.ctx.state,'split');
+assert.equal(fast.writes.length,0);assert.equal(fast.ctx.config.source,'/tmp/Reference source.wav');assert.equal(fast.ctx.config.start,3.25);
+assert(fast.worker.some(a=>a[1]==='offline'));
+fast.ctx.edges(40,90,300,2100,4200,6200,12500);assert.equal(fast.ctx.config.edges[0],30,'file render keeps its crossover snapshot');
+fast.ctx.finished(JSON.stringify({files,labels,frames:88200,rate:44100}));
+for(let i=0;i<8;i++){fast.step();fast.flush();fast.step();fast.flush();fast.step();}fast.step();
+assert.equal(fast.ctx.state,'idle');assert.equal(fast.clips.length,8);assert.equal(fast.song.is_playing,1);assert.equal(fast.song.current_song_time,15);
+assert(!fast.writes.some(a=>a[0]===1 && a[1]!=='create_audio_track'),'no transport writes during file split');
+for(const c of fast.clips){assert.equal(c.start_time,3.25);assert.equal(c.loop_end,2);assert.equal(c.warping,0);}
+const cancelledFile=harness({},'file');cancelledFile.ctx.print();cancelledFile.ctx.ready();cancelledFile.ctx.cancel();cancelledFile.ctx.cancelled();
+assert.equal(cancelledFile.writes.length,0);assert.equal(cancelledFile.ctx.state,'idle');
 const report={status:'PASS',checks:['one-pass capture before any track creation','asynchronous clip loading and Warp change','all eight named and colored tracks','muted outputs','same arrangement position and duration','transport and loop restored','cancel, seek, DSP, crossover, sample-rate and disk failures','active recording guarded','unsaved-set folder cancellation'],limitations:'Stateful mock Live API; native host behavior needs integration verification.'};
 fs.writeFileSync('tests/print-controller-results.json',JSON.stringify(report,null,2)+'\n');console.log(report);

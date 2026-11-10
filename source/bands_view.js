@@ -10,8 +10,8 @@ function emptySpectra() {var a=[];for(var j=0;j<spectrumCount;j++)a.push([]);ret
 var sr=48000, N=16384, bins=N/2, cuts=[30,80,250,2000,4000,6000,12000], zoomed=1, held=0, dry=0;
 var buffers=[], raw=[], smooth=[], ref=null, active=[], meters=[];
 var plot, buttons=[], mouse=[-1,-1], status="Play audio to analyze", peak=-120;
-var printing=0, printMessage='Print Loop -> 8 tracks / pre-gain';
-function printstatus(busy,message) {printing=busy;printMessage=message;}
+var printing=0, printMessage='Whole source file -> 8 tracks / fast', printMode='file';
+function printstatus(busy,message,mode) {printing=busy;printMessage=message;printMode=mode||'file';}
 for(var b=0;b<bandCount;b++){active.push(1);meters.push(-120);}
 for(var i=0;i<spectrumCount;i++) {buffers.push(new Buffer(uid+"-spec"+i));raw.push([]);smooth.push([]);}
 // Only the visible view acquires data; the dock pauses while the pop-out is open.
@@ -119,7 +119,7 @@ function spectrum(arr,c,idx,width) {
 function paint() {
     var w=box.rect[2]-box.rect[0],h=box.rect[3]-box.rect[1];buttons=[];
     rect(0,0,w,h,[0.065,0.085,0.105]);
-    text("B A N D S  1.2",12,18,13,[0.91,0.96,0.96]);
+    text("B A N D S  1.3",12,18,13,[0.91,0.96,0.96]);
     var bx=large?w-365:174;
     var zoomLabel=zoomed===1?"10–500 Hz":zoomed===2?"2–"+fmt(sr/2)+" Hz":"10–20k Hz";
     button(zoomLabel,bx,4,78,"zoom",zoomed===1?0:zoomed===0?2:1,zoomed!==0);
@@ -128,8 +128,9 @@ function paint() {
     button("Clear",bx+206,4,45,"clearref",0,0);
     if(!large)button("Expand",bx+256,4,62,"expand",0,0);
     else {
-        button(printing?'Cancel Print':'Print Bands',150,4,95,'print',0,printing);
-        text(printMessage.slice(0,63),258,18,10,[0.55,0.69,0.72]);
+        button(printing?'Cancel':printMode==='file'?'Split File':'Print Loop',150,4,95,'print',0,printing);
+        button(printMode==='file'?'File: fast':'Track: live',250,4,95,'printmode',0,0);
+        text(printMessage.slice(0,49),355,18,10,[0.55,0.69,0.72]);
     }
     if(!plot)layout();
     var boundaries=[10].concat(cuts,[sr/2]);

@@ -120,7 +120,7 @@
             22
           ],
           "varname": "printworker",
-          "code": "// Node for Max: bounded disk I/O only. No DSP, network, npm or Live API here.\n'use strict';\nconst fs = require('fs');\nconst path = require('path');\nconst NAMES = ['Ultra Low', 'Sub', 'Bass', 'Mids', 'High-Mids', 'Presence', 'High', 'Ultra High'];\nconst CHANNELS = 17; // eight stereo bands, then the sample-synchronous host beat phase\nconst BLOCK = 8192;\nconst MAX_BYTES = 3 * 1024 ** 3;\n\nfunction nativePath(s) {\n    s = String(s || '');\n    // Max's macOS path convention: \"Macintosh HD:/path/to/file\".\n    if (process.platform === 'darwin' && /^[^/:]+:\\//.test(s)) {\n        const colon = s.indexOf(':');\n        const relative = s.slice(colon + 1);\n        const volume = '/Volumes/' + s.slice(0, colon) + relative;\n        return fs.existsSync(volume) ? volume : relative;\n    }\n    return s;\n}\nfunction safeName(s) {\n    return String(s).replace(/[\\x00-\\x1f<>:\"/\\\\|?*]/g, '_').replace(/[. ]+$/g, '').slice(0, 70) || 'Reference';\n}\nfunction ranges(edges, rate) {\n    const cuts = edges.map(f => Math.min(f, rate * .49));\n    return NAMES.map((name, i) => name + ' ' + (i ? cuts[i - 1] : 0) + '-' + (i < 7 ? cuts[i] : rate / 2) + ' Hz');\n}\nfunction prepare(config) {\n    if (!Number.isFinite(config.rate) || config.rate < 22050 || config.rate > 384000 ||\n        !Number.isFinite(config.start) || config.start < 0 || !Number.isFinite(config.length) || config.length <= 0 ||\n        !Number.isFinite(config.preStart) || config.preStart < 0 || config.preStart > config.start || config.preStart % 1 ||\n        !Array.isArray(config.edges) || config.edges.length !== 7 ||\n        config.edges.some((f, i) => !Number.isFinite(f) || f <= 0 || (i && f <= config.edges[i - 1]))) {\n        throw Error('Invalid print range, sample rate or crossovers.');\n    }\n    let base = nativePath(config.folder);\n    if (!base && config.setPath) base = path.join(path.dirname(nativePath(config.setPath)), 'Samples', 'Processed', 'BANDS');\n    if (!path.isAbsolute(base)) throw Error('Choose an output folder first.');\n    fs.mkdirSync(base, {recursive: true});\n    const folder = fs.mkdtempSync(path.join(base, 'BANDS-' + safeName(config.reference) + '-'));\n    const labels = ranges(config.edges, config.rate);\n    const files = labels.map((label, i) => path.join(folder, String(i + 1).padStart(2, '0') + ' ' + safeName(label) + '.wav'));\n    const job = {...config, folder, labels, files, raw: path.join(folder, '.capture.wav')};\n    fs.writeFileSync(path.join(folder, 'print.json'), JSON.stringify({version: '1.2.0', ...config, labels}, null, 2));\n    return job;\n}\nfunction readExactly(fd, length, position) {\n    const b = Buffer.alloc(length);\n    let n = 0;\n    while (n < length) {\n        const got = fs.readSync(fd, b, n, length - n, position + n);\n        if (!got) throw Error('Incomplete capture file.');\n        n += got;\n    }\n    return b;\n}\nfunction waveInfo(fd) {\n    const size = fs.fstatSync(fd).size;\n    const head = readExactly(fd, 12, 0);\n    if (head.toString('ascii', 0, 4) !== 'RIFF' || head.toString('ascii', 8) !== 'WAVE') throw Error('Capture is not a WAV file.');\n    let fmt, data;\n    for (let p = 12; p + 8 <= size;) {\n        const h = readExactly(fd, 8, p), tag = h.toString('ascii', 0, 4), n = h.readUInt32LE(4);\n        if (p + 8 + n > size) throw Error('Capture is still being written or disk is full.');\n        if (tag === 'fmt ') {\n            if (n < 16 || n > 4096) throw Error('Invalid WAV format.');\n            const b = readExactly(fd, n, p + 8);\n            let format = b.readUInt16LE(0);\n            if (format === 65534 && n >= 40) format = b.readUInt16LE(24);\n            fmt = {format, channels: b.readUInt16LE(2), rate: b.readUInt32LE(4), align: b.readUInt16LE(12), bits: b.readUInt16LE(14)};\n        }\n        if (tag === 'data') {data = {offset: p + 8, bytes: n}; break;}\n        p += 8 + n + (n % 2);\n    }\n    if (!fmt || !data || fmt.format !== 3 || fmt.bits !== 32 || fmt.align !== fmt.channels * 4 || !data.bytes || data.bytes % fmt.align) {\n        throw Error('Expected a complete 32-bit float WAV capture.');\n    }\n    return {...fmt, ...data, frames: data.bytes / fmt.align};\n}\nfunction waveHeader(channels, rate, frames) {\n    // IEEE float WAV with the mandatory fact chunk; avoids normalization/clipping.\n    const h = Buffer.alloc(56), bytes = frames * channels * 4;\n    h.write('RIFF'); h.writeUInt32LE(48 + bytes, 4); h.write('WAVEfmt ', 8);\n    h.writeUInt32LE(16, 16); h.writeUInt16LE(3, 20); h.writeUInt16LE(channels, 22);\n    h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * channels * 4, 28);\n    h.writeUInt16LE(channels * 4, 32); h.writeUInt16LE(32, 34);\n    h.write('fact', 36); h.writeUInt32LE(4, 40); h.writeUInt32LE(frames, 44);\n    h.write('data', 48); h.writeUInt32LE(bytes, 52);\n    return h;\n}\nfunction writeAll(fd, b, length = b.length, position = null) {\n    let n = 0;\n    while (n < length) n += fs.writeSync(fd, b, n, length - n, position === null ? null : position + n);\n}\nconst yieldIO = () => new Promise(resolve => setImmediate(resolve));\n\n// Find both boundaries from a recorded plugphasor~ channel, not JS timers.\n// Integer pre-roll position anchors the unwrapped quarter-note phase.\nasync function findRange(fd, info, job, cancelled) {\n    let previous = 0, beat = job.preStart, moving = false, first = -1, last = -1;\n    const b = Buffer.alloc(BLOCK * info.align), end = job.start + job.length;\n    for (let base = 0; base < info.frames; base += BLOCK) {\n        if (cancelled()) throw Error('Print cancelled.');\n        const count = Math.min(BLOCK, info.frames - base);\n        const got = fs.readSync(fd, b, 0, count * info.align, info.offset + base * info.align);\n        if (got !== count * info.align) throw Error('Incomplete capture.');\n        for (let i = 0; i < count; i++) {\n            const phase = b.readFloatLE(i * info.align + 64), frame = base + i;\n            if (!Number.isFinite(phase) || phase < 0 || phase > 1) throw Error('Invalid host clock.');\n            if (!moving) {\n                if (phase === 0) continue;\n                // Recording must begin while transport is stopped at an integer beat.\n                if (phase > .01 || frame < 2) throw Error('Host clock did not start from the requested pre-roll position.');\n                moving = true;\n                // At song start, retain the sample at phase zero immediately before\n                // the first positive phase. No leading stopped-transport silence.\n                if (job.start === job.preStart) first = frame - 1;\n            } else {\n                let step = phase - previous;\n                if (step < -.5) {beat++; step++;}\n                if (step <= 0 || step > .005) throw Error('Transport stopped or jumped during the print.');\n            }\n            const position = beat + phase;\n            // Half-sample tolerance selects the nearest sample to a beat boundary.\n            // Bias exact half-sample ties forward; float32 phase quantization must\n            // not make start and end choose opposite sides of the same tie.\n            const epsilon = moving && previous !== 0 ? Math.max(0, Math.min(.0001, ((phase - previous + 1) % 1) * .5) - 1e-7) : 0;\n            if (first < 0 && position + epsilon >= job.start) first = frame;\n            if (position + epsilon >= end) {last = frame; break;}\n            previous = phase;\n        }\n        if (last >= 0) break;\n        await yieldIO();\n    }\n    if (first < 0 || last <= first) throw Error('Capture ended before the complete Loop range was recorded.');\n    return {first, last, frames: last - first};\n}\nasync function split(job, cancelled = () => false, progress = () => {}) {\n    const input = fs.openSync(job.raw, 'r'), handles = [], parts = [];\n    try {\n        const info = waveInfo(input);\n        if (info.channels !== CHANNELS || info.rate !== job.rate) throw Error('Capture channel count or sample rate changed.');\n        const range = await findRange(input, info, job, cancelled);\n        const inputBuffer = Buffer.alloc(BLOCK * info.align);\n        const output = NAMES.map(() => Buffer.alloc(BLOCK * 8));\n        for (const file of job.files) {\n            const part = file + '.part';\n            handles.push(fs.openSync(part, 'wx')); parts.push(part);\n            writeAll(handles[handles.length - 1], waveHeader(2, info.rate, range.frames));\n        }\n        let lastProgress = 0;\n        for (let done = 0; done < range.frames; done += BLOCK) {\n            if (cancelled()) throw Error('Print cancelled.');\n            const count = Math.min(BLOCK, range.frames - done);\n            if (fs.readSync(input, inputBuffer, 0, count * info.align, info.offset + (range.first + done) * info.align) !== count * info.align) throw Error('Incomplete capture.');\n            for (let band = 0; band < 8; band++) {\n                for (let frame = 0; frame < count; frame++) {\n                    const start = frame * info.align + band * 8;\n                    inputBuffer.copy(output[band], frame * 8, start, start + 8);\n                }\n                writeAll(handles[band], output[band], count * 8);\n            }\n            if (Date.now() - lastProgress > 150) {progress(Math.floor(100 * (done + count) / range.frames)); lastProgress = Date.now();}\n            await yieldIO();\n        }\n        for (const fd of handles) {fs.fsyncSync(fd); fs.closeSync(fd);}\n        handles.length = 0;\n        if (cancelled()) throw Error('Print cancelled.');\n        for (let i = 0; i < parts.length; i++) fs.renameSync(parts[i], job.files[i]);\n        const result = {files: job.files, labels: job.labels, folder: job.folder, rate: info.rate, frames: range.frames, first: range.first, last: range.last};\n        fs.writeFileSync(path.join(job.folder, 'result.json'), JSON.stringify(result, null, 2));\n        fs.unlinkSync(job.raw);\n        return result;\n    } finally {\n        fs.closeSync(input);\n        for (const fd of handles) fs.closeSync(fd);\n        for (const part of parts) {try {fs.unlinkSync(part);} catch (_) {}}\n    }\n}\nfunction discard(job) {\n    // Only remove our temporary capture; completed WAVs are never deleted.\n    if (job) {try {fs.unlinkSync(job.raw);} catch (_) {}}\n}\nmodule.exports = {prepare, split, waveInfo, waveHeader, findRange, safeName, nativePath, MAX_BYTES};\n\nif (process.env.MAX_ENV) {\n    const max = require('max-api');\n    let job = null, busy = false, cancelled = false;\n    max.addHandler('prepare', json => {\n        if (busy || job) return max.outlet('failed', 'Previous print is still finishing.');\n        try {cancelled = false; job = prepare(JSON.parse(json)); max.outlet('prepared', job.raw, job.folder);}\n        catch (e) {max.outlet('failed', e.message);}\n    });\n    max.addHandler('finish', async () => {\n        if (!job || busy) return;\n        busy = true;\n        try {\n            const result = await split(job, () => cancelled, value => max.outlet('progress', value));\n            max.outlet('finished', JSON.stringify(result));\n        } catch (e) {max.outlet('failed', e.message);}\n        finally {discard(job); job = null; busy = false;}\n    });\n    max.addHandler('cancel', () => {\n        cancelled = true;\n        if (!busy) {discard(job); job = null; max.outlet('cancelled');}\n    });\n    max.addHandler('ping', () => max.outlet('ready'));\n    max.outlet('ready');\n}\n",
+          "code": "// Node for Max: bounded file processing. No network, npm or Live API here.\n'use strict';\nconst fs = require('fs');\nconst path = require('path');\nconst NAMES = ['Ultra Low', 'Sub', 'Bass', 'Mids', 'High-Mids', 'Presence', 'High', 'Ultra High'];\nconst CHANNELS = 17; // eight stereo bands, then the sample-synchronous host beat phase\nconst BLOCK = 8192;\nconst MAX_BYTES = 3 * 1024 ** 3;\n\nfunction nativePath(s) {\n    s = String(s || '');\n    // Max's macOS path convention: \"Macintosh HD:/path/to/file\".\n    if (process.platform === 'darwin' && /^[^/:]+:\\//.test(s)) {\n        const colon = s.indexOf(':');\n        const relative = s.slice(colon + 1);\n        const volume = '/Volumes/' + s.slice(0, colon) + relative;\n        return fs.existsSync(volume) ? volume : relative;\n    }\n    return s;\n}\nfunction safeName(s) {\n    return String(s).replace(/[\\x00-\\x1f<>:\"/\\\\|?*]/g, '_').replace(/[. ]+$/g, '').slice(0, 70) || 'Reference';\n}\nfunction ranges(edges, rate) {\n    const cuts = edges.map(f => Math.min(f, rate * .49));\n    return NAMES.map((name, i) => name + ' ' + (i ? cuts[i - 1] : 0) + '-' + (i < 7 ? cuts[i] : rate / 2) + ' Hz');\n}\nfunction prepare(config) {\n    if (!Number.isFinite(config.rate) || config.rate < 22050 || config.rate > 384000 ||\n        !Number.isFinite(config.start) || config.start < 0 || !Number.isFinite(config.length) || config.length <= 0 ||\n        !Number.isFinite(config.preStart) || config.preStart < 0 || config.preStart > config.start || config.preStart % 1 ||\n        !Array.isArray(config.edges) || config.edges.length !== 7 ||\n        config.edges.some((f, i) => !Number.isFinite(f) || f <= 0 || (i && f <= config.edges[i - 1]))) {\n        throw Error('Invalid print range, sample rate or crossovers.');\n    }\n    let base = nativePath(config.folder);\n    if (!base && config.setPath) base = path.join(path.dirname(nativePath(config.setPath)), 'Samples', 'Processed', 'BANDS');\n    if (!path.isAbsolute(base)) throw Error('Choose an output folder first.');\n    fs.mkdirSync(base, {recursive: true});\n    const folder = fs.mkdtempSync(path.join(base, 'BANDS-' + safeName(config.reference) + '-'));\n    const labels = ranges(config.edges, config.rate);\n    const files = labels.map((label, i) => path.join(folder, String(i + 1).padStart(2, '0') + ' ' + safeName(label) + '.wav'));\n    const job = {...config, folder, labels, files, raw: path.join(folder, '.capture.wav')};\n    fs.writeFileSync(path.join(folder, 'print.json'), JSON.stringify({version: '1.3.0', ...config, labels}, null, 2));\n    return job;\n}\nfunction readExactly(fd, length, position) {\n    const b = Buffer.alloc(length);\n    let n = 0;\n    while (n < length) {\n        const got = fs.readSync(fd, b, n, length - n, position + n);\n        if (!got) throw Error('Incomplete capture file.');\n        n += got;\n    }\n    return b;\n}\nfunction waveInfo(fd, pcm = false) {\n    const size = fs.fstatSync(fd).size;\n    const head = readExactly(fd, 12, 0);\n    if (head.toString('ascii', 0, 4) !== 'RIFF' || head.toString('ascii', 8) !== 'WAVE') throw Error('Capture is not a WAV file.');\n    let fmt, data;\n    for (let p = 12; p + 8 <= size;) {\n        const h = readExactly(fd, 8, p), tag = h.toString('ascii', 0, 4), n = h.readUInt32LE(4);\n        if (p + 8 + n > size) throw Error('Capture is still being written or disk is full.');\n        if (tag === 'fmt ') {\n            if (n < 16 || n > 4096) throw Error('Invalid WAV format.');\n            const b = readExactly(fd, n, p + 8);\n            let format = b.readUInt16LE(0);\n            if (format === 65534 && n >= 40) format = b.readUInt16LE(24);\n            fmt = {format, channels: b.readUInt16LE(2), rate: b.readUInt32LE(4), align: b.readUInt16LE(12), bits: b.readUInt16LE(14)};\n        }\n        if (tag === 'data') {data = {offset: p + 8, bytes: n}; break;}\n        p += 8 + n + (n % 2);\n    }\n    const supported = fmt && (pcm ? (fmt.format === 1 && [8,16,24,32].includes(fmt.bits)) ||\n        (fmt.format === 3 && [32,64].includes(fmt.bits)) : fmt.format === 3 && fmt.bits === 32);\n    if (!supported || !data || fmt.align !== fmt.channels * fmt.bits / 8 || !data.bytes || data.bytes % fmt.align) {\n        throw Error('Expected a complete 32-bit float WAV capture.');\n    }\n    return {...fmt, ...data, frames: data.bytes / fmt.align, little: true, unsigned: fmt.bits === 8};\n}\nfunction waveHeader(channels, rate, frames) {\n    // IEEE float WAV with the mandatory fact chunk; avoids normalization/clipping.\n    const h = Buffer.alloc(56), bytes = frames * channels * 4;\n    h.write('RIFF'); h.writeUInt32LE(48 + bytes, 4); h.write('WAVEfmt ', 8);\n    h.writeUInt32LE(16, 16); h.writeUInt16LE(3, 20); h.writeUInt16LE(channels, 22);\n    h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * channels * 4, 28);\n    h.writeUInt16LE(channels * 4, 32); h.writeUInt16LE(32, 34);\n    h.write('fact', 36); h.writeUInt32LE(4, 40); h.writeUInt32LE(frames, 44);\n    h.write('data', 48); h.writeUInt32LE(bytes, 52);\n    return h;\n}\nfunction writeAll(fd, b, length = b.length, position = null) {\n    let n = 0;\n    while (n < length) {\n        const wrote = fs.writeSync(fd, b, n, length - n, position === null ? null : position + n);\n        if (!wrote) throw Error('Disk write stopped. Check free space.');\n        n += wrote;\n    }\n}\nconst yieldIO = () => new Promise(resolve => setImmediate(resolve));\n\n// Find both boundaries from a recorded plugphasor~ channel, not JS timers.\n// Integer pre-roll position anchors the unwrapped quarter-note phase.\nasync function findRange(fd, info, job, cancelled) {\n    let previous = 0, beat = job.preStart, moving = false, first = -1, last = -1;\n    const b = Buffer.alloc(BLOCK * info.align), end = job.start + job.length;\n    for (let base = 0; base < info.frames; base += BLOCK) {\n        if (cancelled()) throw Error('Print cancelled.');\n        const count = Math.min(BLOCK, info.frames - base);\n        const got = fs.readSync(fd, b, 0, count * info.align, info.offset + base * info.align);\n        if (got !== count * info.align) throw Error('Incomplete capture.');\n        for (let i = 0; i < count; i++) {\n            const phase = b.readFloatLE(i * info.align + 64), frame = base + i;\n            if (!Number.isFinite(phase) || phase < 0 || phase > 1) throw Error('Invalid host clock.');\n            if (!moving) {\n                if (phase === 0) continue;\n                // Recording must begin while transport is stopped at an integer beat.\n                if (phase > .01 || frame < 2) throw Error('Host clock did not start from the requested pre-roll position.');\n                moving = true;\n                // At song start, retain the sample at phase zero immediately before\n                // the first positive phase. No leading stopped-transport silence.\n                if (job.start === job.preStart) first = frame - 1;\n            } else {\n                let step = phase - previous;\n                if (step < -.5) {beat++; step++;}\n                if (step <= 0 || step > .005) throw Error('Transport stopped or jumped during the print.');\n            }\n            const position = beat + phase;\n            // Half-sample tolerance selects the nearest sample to a beat boundary.\n            // Bias exact half-sample ties forward; float32 phase quantization must\n            // not make start and end choose opposite sides of the same tie.\n            const epsilon = moving && previous !== 0 ? Math.max(0, Math.min(.0001, ((phase - previous + 1) % 1) * .5) - 1e-7) : 0;\n            if (first < 0 && position + epsilon >= job.start) first = frame;\n            if (position + epsilon >= end) {last = frame; break;}\n            previous = phase;\n        }\n        if (last >= 0) break;\n        await yieldIO();\n    }\n    if (first < 0 || last <= first) throw Error('Capture ended before the complete Loop range was recorded.');\n    return {first, last, frames: last - first};\n}\nasync function split(job, cancelled = () => false, progress = () => {}) {\n    const input = fs.openSync(job.raw, 'r'), handles = [], parts = [];\n    try {\n        const info = waveInfo(input);\n        if (info.channels !== CHANNELS || info.rate !== job.rate) throw Error('Capture channel count or sample rate changed.');\n        const range = await findRange(input, info, job, cancelled);\n        const inputBuffer = Buffer.alloc(BLOCK * info.align);\n        const output = NAMES.map(() => Buffer.alloc(BLOCK * 8));\n        for (const file of job.files) {\n            const part = file + '.part';\n            handles.push(fs.openSync(part, 'wx')); parts.push(part);\n            writeAll(handles[handles.length - 1], waveHeader(2, info.rate, range.frames));\n        }\n        let lastProgress = 0;\n        for (let done = 0; done < range.frames; done += BLOCK) {\n            if (cancelled()) throw Error('Print cancelled.');\n            const count = Math.min(BLOCK, range.frames - done);\n            if (fs.readSync(input, inputBuffer, 0, count * info.align, info.offset + (range.first + done) * info.align) !== count * info.align) throw Error('Incomplete capture.');\n            for (let band = 0; band < 8; band++) {\n                for (let frame = 0; frame < count; frame++) {\n                    const start = frame * info.align + band * 8;\n                    inputBuffer.copy(output[band], frame * 8, start, start + 8);\n                }\n                writeAll(handles[band], output[band], count * 8);\n            }\n            if (Date.now() - lastProgress > 150) {progress(Math.floor(100 * (done + count) / range.frames)); lastProgress = Date.now();}\n            await yieldIO();\n        }\n        for (const fd of handles) {fs.fsyncSync(fd); fs.closeSync(fd);}\n        handles.length = 0;\n        if (cancelled()) throw Error('Print cancelled.');\n        for (let i = 0; i < parts.length; i++) fs.renameSync(parts[i], job.files[i]);\n        const result = {files: job.files, labels: job.labels, folder: job.folder, rate: info.rate, frames: range.frames, first: range.first, last: range.last};\n        fs.writeFileSync(path.join(job.folder, 'result.json'), JSON.stringify(result, null, 2));\n        fs.unlinkSync(job.raw);\n        return result;\n    } finally {\n        fs.closeSync(input);\n        for (const fd of handles) fs.closeSync(fd);\n        for (const part of parts) {try {fs.unlinkSync(part);} catch (_) {}}\n    }\n}\n// AIFF/AIFC PCM and floating point, including the common little-endian variant.\nfunction aiffInfo(fd) {\n    const size=fs.fstatSync(fd).size, head=readExactly(fd,12,0);\n    const kind=head.toString('ascii',8,12);\n    if(head.toString('ascii',0,4)!=='FORM' || !['AIFF','AIFC'].includes(kind)) throw Error('Unsupported source format.');\n    let fmt, data;\n    for(let p=12;p+8<=size;) {\n        const h=readExactly(fd,8,p), tag=h.toString('ascii',0,4), n=h.readUInt32BE(4);\n        if(p+8+n>size) throw Error('Incomplete AIFF source.');\n        if(tag==='COMM') {\n            if(n<18 || n>4096 || (kind==='AIFC' && n<22)) throw Error('Invalid AIFF format.');\n            const b=readExactly(fd,n,p+8), codec=kind==='AIFF'?'NONE':b.toString('ascii',18,22);\n            const exponent=b.readUInt16BE(8), mantissa=b.readUInt32BE(10)*2**32+b.readUInt32BE(14);\n            const rate=mantissa*2**((exponent&32767)-16383-63)*(exponent&32768?-1:1);\n            if(!['NONE','twos','sowt','fl32','FL32','fl64','FL64'].includes(codec)) throw Error('Compressed AIFF needs conversion.');\n            const bits=b.readUInt16BE(6), channels=b.readUInt16BE(0);\n            fmt={channels,bits,rate,frames:b.readUInt32BE(2),align:channels*bits/8,\n                format:/^fl/i.test(codec)?3:1,little:codec==='sowt',unsigned:false};\n        }\n        if(tag==='SSND') {\n            if(n<8) throw Error('Invalid AIFF audio chunk.');\n            const offset=readExactly(fd,8,p+8).readUInt32BE(0);\n            if(offset>n-8) throw Error('Invalid AIFF data offset.');\n            data={offset:p+16+offset,bytes:n-8-offset};\n        }\n        p+=8+n+(n%2);\n    }\n    if(!fmt || !data || !fmt.frames || fmt.frames*fmt.align>data.bytes ||\n        !(fmt.format===1?[8,16,24,32]:[32,64]).includes(fmt.bits)) throw Error('Unsupported AIFF samples.');\n    return {...fmt,...data};\n}\nfunction audioInfo(fd) {\n    const magic=readExactly(fd,4,0).toString('ascii');\n    const info=magic==='RIFF'?waveInfo(fd,true):aiffInfo(fd);\n    if(![1,2].includes(info.channels)) throw Error('Use a mono or stereo source file.');\n    if(!Number.isFinite(info.rate) || info.rate<22050 || info.rate>384000 || !Number.isInteger(info.rate)) throw Error('Unsupported source sample rate.');\n    if(info.frames*8>MAX_BYTES) throw Error('Source is too long for one split. Export a shorter file.');\n    return info;\n}\nfunction sampleReader(info) {\n    if(info.format===3) {\n        const method=info.bits===32?(info.little?'readFloatLE':'readFloatBE'):(info.little?'readDoubleLE':'readDoubleBE');\n        return (b,p)=>b[method](p);\n    }\n    if(info.bits===8) return info.unsigned?(b,p)=>(b[p]-128)/128:(b,p)=>b.readInt8(p)/128;\n    const bytes=info.bits/8, scale=2**(info.bits-1);\n    return info.little?(b,p)=>b.readIntLE(p,bytes)/scale:(b,p)=>b.readIntBE(p,bytes)/scale;\n}\nfunction coefficients(f, rate) {\n    f=Math.min(f,rate*.49);\n    const w=2*Math.PI*f/rate,c=Math.cos(w),a=Math.sin(w)/Math.sqrt(2),a0=1+a,b1=-2*c/a0,b2=(1-a)/a0;\n    return {lp:[(1-c)/2/a0,(1-c)/a0,(1-c)/2/a0,b1,b2],hp:[(1+c)/2/a0,-(1+c)/a0,(1+c)/2/a0,b1,b2],ap:[b2,b1,1,b1,b2]};\n}\nfunction filterBlock(data, count, q) {\n    const [a0,a1,a2,b1,b2]=q;let z1=q[5],z2=q[6];\n    for(let n=0;n<count;n++) {\n        const x=data[n],y=a0*x+z1;\n        z1=a1*x-b1*y+z2;z2=a2*x-b2*y;data[n]=y;\n    }\n    // Prevent inaudible recursive tails from entering the denormal range.\n    q[5]=Math.abs(z1)<1e-30?0:z1;q[6]=Math.abs(z2)<1e-30?0:z2;\n}\nfunction makeBank(rate, edges) {\n    const c=edges.map(f=>coefficients(f,rate)), stage=v=>new Float64Array([...v,0,0]);\n    return Array.from({length:2},()=>c.map((v,i)=>({lp:[stage(v.lp),stage(v.lp)],hp:[stage(v.hp),stage(v.hp)],ap:c.slice(i+1).map(a=>stage(a.ap))})));\n}\nfunction createOfflineJob(config) {\n    if(!Number.isFinite(config.start) || config.start<0 || !Array.isArray(config.edges) || config.edges.length!==7 ||\n        config.edges.some((f,i)=>!Number.isFinite(f) || f<=0 || (i && f<=config.edges[i-1]))) throw Error('Invalid crossovers or destination position.');\n    const source=nativePath(config.source);\n    if(!path.isAbsolute(source) || !fs.statSync(source).isFile()) throw Error('The reference source file is unavailable.');\n    let base=nativePath(config.folder);\n    if(!base && config.setPath) base=path.join(path.dirname(nativePath(config.setPath)),'Samples','Processed','BANDS');\n    if(!path.isAbsolute(base)) throw Error('Choose an output folder first.');\n    fs.mkdirSync(base,{recursive:true});\n    const folder=fs.mkdtempSync(path.join(base,'BANDS-'+safeName(config.reference)+'-'));\n    return {...config,mode:'file',source,folder,decoded:path.join(folder,'.decoded.wav')};\n}\nasync function readableSource(job, cancelled, stage) {\n    let fd;\n    try {fd=fs.openSync(job.source,'r');audioInfo(fd);return job.source;}\n    catch(e) {\n        if(process.platform!=='darwin') throw Error('Use a PCM WAV or AIFF source. Convert other formats first.');\n    } finally {if(fd!==undefined)fs.closeSync(fd);}\n    if(cancelled()) throw Error('Print cancelled.');\n    // Core Audio's system converter is included with macOS. No shell, downloads\n    // or external installation; source and destination are separate arguments.\n    await new Promise((resolve,reject)=>{\n        const child=require('child_process').spawn('/usr/bin/afconvert',[job.source,job.decoded,'-f','WAVE','-d','LEF32'],{stdio:['ignore','ignore','pipe']});\n        let error='',limit=false,settled=false;\n        const finish=e=>{if(settled)return;settled=true;clearInterval(timer);e?reject(e):resolve();};\n        child.stderr.on('data',data=>{error=(error+data.toString()).slice(-1000);});\n        child.on('error',()=>finish(Error('The system audio converter could not start. Use WAV or AIFF.')));\n        child.on('close',code=>finish(cancelled()?Error('Print cancelled.'):limit?Error('Decoded source is too large. Export a shorter file.'):code?Error('Cannot decode this audio file. Convert it to WAV or AIFF first.'):null));\n        const timer=setInterval(()=>{\n            try {if(fs.statSync(job.decoded).size>MAX_BYTES)limit=true;}catch(_){}\n            if(cancelled() || limit)child.kill('SIGTERM');else stage('Decoding source file...');\n        },250);\n        stage('Decoding source file...');\n    });\n    return job.decoded;\n}\nasync function splitOffline(job, cancelled=()=>false, progress=()=>{}, stage=()=>{}) {\n    let input;const handles=[],parts=[];\n    try {\n        const source=await readableSource(job,cancelled,stage);\n        if(cancelled()) throw Error('Print cancelled.');\n        input=fs.openSync(source,'r');const info=audioInfo(input),read=sampleReader(info),bank=makeBank(info.rate,job.edges);\n        job.rate=info.rate;job.labels=ranges(job.edges,info.rate);\n        job.files=job.labels.map((label,i)=>path.join(job.folder,String(i+1).padStart(2,'0')+' '+safeName(label)+'.wav'));\n        const bytes=Buffer.alloc(BLOCK*info.align),high=new Float64Array(BLOCK),low=new Float64Array(BLOCK);\n        const outputs=NAMES.map(()=>Buffer.alloc(BLOCK*8));let lastProgress=0;\n        for(const file of job.files) {\n            const part=file+'.part';handles.push(fs.openSync(part,'wx'));parts.push(part);\n            writeAll(handles[handles.length-1],waveHeader(2,info.rate,info.frames));\n        }\n        for(let done=0;done<info.frames;done+=BLOCK) {\n            if(cancelled()) throw Error('Print cancelled.');\n            const count=Math.min(BLOCK,info.frames-done);\n            if(fs.readSync(input,bytes,0,count*info.align,info.offset+done*info.align)!==count*info.align) throw Error('Incomplete source file.');\n            for(let ch=0;ch<2;ch++) {\n                for(let n=0;n<count;n++) {\n                    const x=read(bytes,n*info.align+(info.channels===1?0:ch*info.bits/8));\n                    if(!Number.isFinite(x)) throw Error('Source contains invalid audio samples.');\n                    high[n]=x;\n                }\n                for(let band=0;band<8;band++) {\n                    let samples=high;\n                    if(band<7) {\n                        low.set(high);const s=bank[ch][band];\n                        for(const q of s.lp)filterBlock(low,count,q);\n                        for(const q of s.ap)filterBlock(low,count,q);\n                        samples=low;\n                        for(const q of s.hp)filterBlock(high,count,q);\n                    }\n                    for(let n=0;n<count;n++) {\n                        const y=samples[n];\n                        if(!Number.isFinite(y) || Math.abs(y)>3.402823466e38) throw Error('Source level exceeds float audio range.');\n                        outputs[band].writeFloatLE(y,n*8+ch*4);\n                    }\n                }\n            }\n            for(let band=0;band<8;band++)writeAll(handles[band],outputs[band],count*8);\n            if(Date.now()-lastProgress>150){progress(Math.floor(100*(done+count)/info.frames));lastProgress=Date.now();}\n            await yieldIO();\n        }\n        for(const fd of handles){fs.fsyncSync(fd);fs.closeSync(fd);}handles.length=0;\n        if(cancelled()) throw Error('Print cancelled.');\n        for(let i=0;i<parts.length;i++)fs.renameSync(parts[i],job.files[i]);\n        const result={files:job.files,labels:job.labels,folder:job.folder,rate:info.rate,frames:info.frames,mode:'file'};\n        fs.writeFileSync(path.join(job.folder,'print.json'),JSON.stringify({version:'1.3.0',mode:'file',source:job.source,edges:job.edges,start:job.start,...result},null,2));\n        return result;\n    } finally {\n        if(input!==undefined)fs.closeSync(input);\n        for(const fd of handles)fs.closeSync(fd);\n        for(const file of parts.concat(job.decoded)){try{fs.unlinkSync(file);}catch(_){}}\n    }\n}\nfunction discard(job) {\n    // Only remove our temporary capture; completed WAVs are never deleted.\n    if (job) {try {fs.unlinkSync(job.raw);} catch (_) {}}\n}\nmodule.exports = {prepare, split, waveInfo, waveHeader, findRange, safeName, nativePath, MAX_BYTES,\n    audioInfo, aiffInfo, coefficients, makeBank, filterBlock, createOfflineJob, splitOffline};\n\nif (process.env.MAX_ENV) {\n    const max = require('max-api');\n    let job = null, busy = false, cancelled = false;\n    max.addHandler('offline', async json => {\n        if(busy || job)return max.outlet('failed','Previous print is still finishing.');\n        busy=true;cancelled=false;\n        try {\n            job=createOfflineJob(JSON.parse(json));\n            const result=await splitOffline(job,()=>cancelled,value=>max.outlet('progress',value),text=>max.outlet('stage',text));\n            max.outlet('finished',JSON.stringify(result));\n        } catch(e){max.outlet('failed',e.message);}\n        finally{job=null;busy=false;}\n    });\n    max.addHandler('prepare', json => {\n        if (busy || job) return max.outlet('failed', 'Previous print is still finishing.');\n        try {cancelled = false; job = prepare(JSON.parse(json)); max.outlet('prepared', job.raw, job.folder);}\n        catch (e) {max.outlet('failed', e.message);}\n    });\n    max.addHandler('finish', async () => {\n        if (!job || busy) return;\n        busy = true;\n        try {\n            const result = await split(job, () => cancelled, value => max.outlet('progress', value));\n            max.outlet('finished', JSON.stringify(result));\n        } catch (e) {max.outlet('failed', e.message);}\n        finally {discard(job); job = null; busy = false;}\n    });\n    max.addHandler('cancel', () => {\n        cancelled = true;\n        if (!busy) {discard(job); job = null; max.outlet('cancelled');}\n    });\n    max.addHandler('ping', () => max.outlet('ready'));\n    max.outlet('ready');\n}\n",
           "saved_object_attributes": {
             "autostart": 0,
             "defer": 1,
@@ -3889,17 +3889,17 @@
           "numinlets": 1,
           "numoutlets": 0,
           "patching_rect": [
-            547,
+            645,
             149,
-            450,
+            350,
             16
           ],
-          "text": "Print Loop -> 8 tracks / pre-gain",
+          "text": "Whole source file -> 8 tracks / fast",
           "presentation": 1,
           "presentation_rect": [
-            547,
+            645,
             149,
-            450,
+            350,
             16
           ],
           "textcolor": [
@@ -3915,6 +3915,46 @@
       },
       {
         "box": {
+          "id": "printmode",
+          "maxclass": "textbutton",
+          "numinlets": 1,
+          "numoutlets": 3,
+          "patching_rect": [
+            547,
+            148,
+            90,
+            17
+          ],
+          "text": "File: fast",
+          "presentation": 1,
+          "presentation_rect": [
+            547,
+            148,
+            90,
+            17
+          ],
+          "parameter_enable": 0,
+          "fontsize": 9,
+          "varname": "printmode"
+        }
+      },
+      {
+        "box": {
+          "id": "printmodeclick",
+          "maxclass": "message",
+          "numinlets": 1,
+          "numoutlets": 1,
+          "patching_rect": [
+            1150,
+            935,
+            250,
+            22
+          ],
+          "text": "mode"
+        }
+      },
+      {
+        "box": {
           "id": "printbutton",
           "maxclass": "textbutton",
           "numinlets": 1,
@@ -3925,7 +3965,7 @@
             110,
             17
           ],
-          "text": "Print Bands",
+          "text": "Split File",
           "presentation": 1,
           "presentation_rect": [
             1005,
@@ -3945,7 +3985,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             935,
             250,
             22
@@ -3985,8 +4025,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            935,
+            30,
+            1000,
             250,
             22
           ],
@@ -4000,7 +4040,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1000,
             250,
             22
@@ -4015,7 +4055,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1000,
             250,
             22
@@ -4030,7 +4070,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1000,
             250,
             22
@@ -4045,7 +4085,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1000,
             250,
             22
@@ -4060,7 +4100,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1000,
             250,
             22
@@ -4075,8 +4115,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1000,
+            30,
+            1065,
             250,
             22
           ],
@@ -4090,7 +4130,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1065,
             250,
             22
@@ -4105,7 +4145,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1065,
             250,
             22
@@ -4120,7 +4160,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1065,
             250,
             22
@@ -4135,7 +4175,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1065,
             250,
             22
@@ -4150,7 +4190,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1065,
             250,
             22
@@ -4165,8 +4205,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1065,
+            30,
+            1130,
             250,
             22
           ],
@@ -4180,7 +4220,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1130,
             250,
             22
@@ -4195,7 +4235,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1130,
             250,
             22
@@ -4210,7 +4250,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1130,
             250,
             22
@@ -4225,7 +4265,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1130,
             250,
             22
@@ -4240,7 +4280,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1130,
             250,
             22
@@ -4255,8 +4295,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1130,
+            30,
+            1195,
             250,
             22
           ],
@@ -4270,7 +4310,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1195,
             250,
             22
@@ -4285,7 +4325,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1195,
             250,
             22
@@ -4300,7 +4340,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1195,
             250,
             22
@@ -4315,7 +4355,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1195,
             250,
             22
@@ -4330,7 +4370,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1195,
             250,
             22
@@ -4345,8 +4385,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1195,
+            30,
+            1260,
             250,
             22
           ],
@@ -4360,7 +4400,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1260,
             250,
             22
@@ -4375,7 +4415,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1260,
             250,
             22
@@ -4390,7 +4430,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1260,
             250,
             22
@@ -4405,7 +4445,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1260,
             250,
             22
@@ -4420,7 +4460,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1260,
             250,
             22
@@ -4435,8 +4475,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1260,
+            30,
+            1325,
             250,
             22
           ],
@@ -4450,7 +4490,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1325,
             250,
             22
@@ -4465,7 +4505,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1325,
             250,
             22
@@ -4480,7 +4520,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1325,
             250,
             22
@@ -4495,7 +4535,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1325,
             250,
             22
@@ -4510,7 +4550,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1325,
             250,
             22
@@ -4525,8 +4565,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1325,
+            30,
+            1390,
             250,
             22
           ],
@@ -4540,7 +4580,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1390,
             250,
             22
@@ -4555,7 +4595,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1390,
             250,
             22
@@ -4570,7 +4610,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1390,
             250,
             22
@@ -4585,7 +4625,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1390,
             250,
             22
@@ -4600,7 +4640,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1390,
             250,
             22
@@ -4615,8 +4655,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1390,
+            30,
+            1455,
             250,
             22
           ],
@@ -4630,7 +4670,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1455,
             250,
             22
@@ -4645,7 +4685,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1455,
             250,
             22
@@ -4660,7 +4700,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1455,
             250,
             22
@@ -4675,7 +4715,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1455,
             250,
             22
@@ -4690,7 +4730,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1455,
             250,
             22
@@ -4705,8 +4745,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1455,
+            30,
+            1520,
             250,
             22
           ],
@@ -4720,7 +4760,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1520,
             250,
             22
@@ -4735,7 +4775,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1520,
             250,
             22
@@ -4750,7 +4790,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1520,
             250,
             22
@@ -4765,7 +4805,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1520,
             250,
             22
@@ -4780,7 +4820,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1520,
             250,
             22
@@ -4795,8 +4835,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1520,
+            30,
+            1585,
             250,
             22
           ],
@@ -4810,7 +4850,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1585,
             250,
             22
@@ -4825,7 +4865,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1585,
             250,
             22
@@ -4840,7 +4880,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1585,
             250,
             22
@@ -4855,7 +4895,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1585,
             250,
             22
@@ -4870,7 +4910,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1585,
             250,
             22
@@ -4885,8 +4925,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1585,
+            30,
+            1650,
             250,
             22
           ],
@@ -4900,7 +4940,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1650,
             250,
             22
@@ -4915,7 +4955,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1650,
             250,
             22
@@ -4930,7 +4970,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1650,
             250,
             22
@@ -4945,7 +4985,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1650,
             250,
             22
@@ -4960,7 +5000,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1650,
             250,
             22
@@ -4975,8 +5015,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1650,
+            30,
+            1715,
             250,
             22
           ],
@@ -4990,7 +5030,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1715,
             250,
             22
@@ -5005,7 +5045,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1715,
             250,
             22
@@ -5020,7 +5060,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1715,
             250,
             22
@@ -5035,7 +5075,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1715,
             250,
             22
@@ -5050,7 +5090,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1715,
             250,
             22
@@ -5065,8 +5105,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1715,
+            30,
+            1780,
             250,
             22
           ],
@@ -5080,7 +5120,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1780,
             250,
             22
@@ -5095,7 +5135,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1780,
             250,
             22
@@ -5110,7 +5150,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1780,
             250,
             22
@@ -5125,7 +5165,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1780,
             250,
             22
@@ -5140,7 +5180,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1780,
             250,
             22
@@ -5155,8 +5195,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1780,
+            30,
+            1845,
             250,
             22
           ],
@@ -5170,7 +5210,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1845,
             250,
             22
@@ -5185,7 +5225,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1845,
             250,
             22
@@ -5200,7 +5240,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1845,
             250,
             22
@@ -5215,7 +5255,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1845,
             250,
             22
@@ -5230,7 +5270,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1845,
             250,
             22
@@ -5245,8 +5285,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1845,
+            30,
+            1910,
             250,
             22
           ],
@@ -5260,7 +5300,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1910,
             250,
             22
@@ -5275,7 +5315,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1910,
             250,
             22
@@ -5290,7 +5330,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1910,
             250,
             22
@@ -5305,7 +5345,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1910,
             250,
             22
@@ -5320,7 +5360,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1910,
             250,
             22
@@ -5335,8 +5375,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1910,
+            30,
+            1975,
             250,
             22
           ],
@@ -5350,7 +5390,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             1975,
             250,
             22
@@ -5365,7 +5405,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             1975,
             250,
             22
@@ -5380,7 +5420,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             1975,
             250,
             22
@@ -5395,7 +5435,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             1975,
             250,
             22
@@ -5410,7 +5450,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             1975,
             250,
             22
@@ -5425,8 +5465,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            1975,
+            30,
+            2040,
             250,
             22
           ],
@@ -5440,7 +5480,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2040,
             250,
             22
@@ -5455,7 +5495,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2040,
             250,
             22
@@ -5470,7 +5510,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2040,
             250,
             22
@@ -5485,7 +5525,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2040,
             250,
             22
@@ -5500,7 +5540,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2040,
             250,
             22
@@ -5515,8 +5555,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2040,
+            30,
+            2105,
             250,
             22
           ],
@@ -5530,7 +5570,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2105,
             250,
             22
@@ -5545,7 +5585,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2105,
             250,
             22
@@ -5560,7 +5600,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2105,
             250,
             22
@@ -5575,7 +5615,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2105,
             250,
             22
@@ -5590,7 +5630,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2105,
             250,
             22
@@ -5605,8 +5645,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2105,
+            30,
+            2170,
             250,
             22
           ],
@@ -5620,7 +5660,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2170,
             250,
             22
@@ -5635,7 +5675,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2170,
             250,
             22
@@ -5650,7 +5690,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2170,
             250,
             22
@@ -5665,7 +5705,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2170,
             250,
             22
@@ -5680,7 +5720,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2170,
             250,
             22
@@ -5695,8 +5735,8 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2170,
+            30,
+            2235,
             250,
             22
           ],
@@ -5710,7 +5750,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2235,
             250,
             22
@@ -5725,7 +5765,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2235,
             250,
             22
@@ -5740,7 +5780,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2235,
             250,
             22
@@ -5755,7 +5795,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2235,
             250,
             22
@@ -5770,7 +5810,7 @@
           "numinlets": 6,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2235,
             250,
             22
@@ -5785,8 +5825,8 @@
           "numinlets": 17,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2235,
+            30,
+            2300,
             250,
             22
           ],
@@ -5801,7 +5841,7 @@
           "numinlets": 0,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2300,
             250,
             22
@@ -5816,7 +5856,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2300,
             250,
             22
@@ -5831,7 +5871,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2300,
             250,
             22
@@ -5846,7 +5886,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2300,
             250,
             22
@@ -5861,7 +5901,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
+            1430,
             2300,
             250,
             22
@@ -5876,8 +5916,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2300,
+            30,
+            2365,
             250,
             22
           ],
@@ -5891,7 +5931,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            30,
+            310,
             2365,
             250,
             22
@@ -5906,7 +5946,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2365,
             250,
             22
@@ -5921,7 +5961,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            590,
+            870,
             2365,
             250,
             22
@@ -5936,7 +5976,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2365,
             250,
             22
@@ -5951,7 +5991,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
+            1430,
             2365,
             250,
             22
@@ -5966,8 +6006,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2365,
+            30,
+            2430,
             250,
             22
           ],
@@ -5981,7 +6021,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            30,
+            310,
             2430,
             250,
             22
@@ -5996,7 +6036,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2430,
             250,
             22
@@ -6011,7 +6051,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            590,
+            870,
             2430,
             250,
             22
@@ -6026,7 +6066,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2430,
             250,
             22
@@ -6041,7 +6081,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
+            1430,
             2430,
             250,
             22
@@ -6056,8 +6096,8 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2430,
+            30,
+            2495,
             250,
             22
           ],
@@ -6071,7 +6111,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            30,
+            310,
             2495,
             250,
             22
@@ -6086,7 +6126,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2495,
             250,
             22
@@ -6101,7 +6141,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            590,
+            870,
             2495,
             250,
             22
@@ -6116,7 +6156,7 @@
           "numinlets": 1,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2495,
             250,
             22
@@ -6131,7 +6171,7 @@
           "numinlets": 2,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
+            1430,
             2495,
             250,
             22
@@ -6146,8 +6186,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2495,
+            30,
+            2560,
             250,
             22
           ],
@@ -6161,7 +6201,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2560,
             250,
             22
@@ -6176,7 +6216,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2560,
             250,
             22
@@ -6191,7 +6231,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2560,
             250,
             22
@@ -6206,7 +6246,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2560,
             250,
             22
@@ -6221,7 +6261,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2560,
             250,
             22
@@ -6236,8 +6276,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2560,
+            30,
+            2625,
             250,
             22
           ],
@@ -6251,7 +6291,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2625,
             250,
             22
@@ -6266,7 +6306,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2625,
             250,
             22
@@ -6281,7 +6321,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2625,
             250,
             22
@@ -6296,7 +6336,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2625,
             250,
             22
@@ -6311,7 +6351,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2625,
             250,
             22
@@ -6326,8 +6366,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2625,
+            30,
+            2690,
             250,
             22
           ],
@@ -6341,7 +6381,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2690,
             250,
             22
@@ -6356,7 +6396,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2690,
             250,
             22
@@ -6371,7 +6411,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2690,
             250,
             22
@@ -6386,7 +6426,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2690,
             250,
             22
@@ -6401,7 +6441,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2690,
             250,
             22
@@ -6416,8 +6456,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2690,
+            30,
+            2755,
             250,
             22
           ],
@@ -6431,7 +6471,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            30,
+            310,
             2755,
             250,
             22
@@ -6446,7 +6486,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            310,
+            590,
             2755,
             250,
             22
@@ -6461,7 +6501,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            590,
+            870,
             2755,
             250,
             22
@@ -6476,7 +6516,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            870,
+            1150,
             2755,
             250,
             22
@@ -6491,7 +6531,7 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1150,
+            1430,
             2755,
             250,
             22
@@ -6506,8 +6546,8 @@
           "numinlets": 2,
           "numoutlets": 1,
           "patching_rect": [
-            1430,
-            2755,
+            30,
+            2820,
             250,
             22
           ],
@@ -6521,7 +6561,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            30,
+            310,
             2820,
             250,
             22
@@ -6536,7 +6576,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            310,
+            590,
             2820,
             250,
             22
@@ -6551,7 +6591,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            590,
+            870,
             2820,
             250,
             22
@@ -6566,7 +6606,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            870,
+            1150,
             2820,
             250,
             22
@@ -6581,7 +6621,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            1150,
+            1430,
             2820,
             250,
             22
@@ -6596,8 +6636,8 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            1430,
-            2820,
+            30,
+            2885,
             250,
             22
           ],
@@ -6611,7 +6651,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            30,
+            310,
             2885,
             250,
             22
@@ -6626,7 +6666,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            310,
+            590,
             2885,
             250,
             22
@@ -6641,7 +6681,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            590,
+            870,
             2885,
             250,
             22
@@ -6656,7 +6696,7 @@
           "numinlets": 1,
           "numoutlets": 2,
           "patching_rect": [
-            870,
+            1150,
             2885,
             250,
             22
@@ -6671,7 +6711,7 @@
           "numinlets": 20,
           "numoutlets": 0,
           "patching_rect": [
-            1150,
+            1430,
             2885,
             250,
             22
@@ -6686,8 +6726,8 @@
           "numinlets": 1,
           "numoutlets": 0,
           "patching_rect": [
-            1430,
-            2885,
+            30,
+            2950,
             250,
             22
           ],
@@ -8262,6 +8302,30 @@
           ],
           "destination": [
             "control",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printmode",
+            0
+          ],
+          "destination": [
+            "printmodeclick",
+            0
+          ]
+        }
+      },
+      {
+        "patchline": {
+          "source": [
+            "printmodeclick",
+            0
+          ],
+          "destination": [
+            "printcontrol",
             0
           ]
         }

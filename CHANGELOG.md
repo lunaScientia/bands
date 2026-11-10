@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.0 — 2026-11-10
+
+- Added fast offline **Split File**, now the default: process the selected reference's entire source file and create eight named, colored tracks without playing or seeking Live. Clip edits, Warp and effects are outside this mode; results use the source's original sample rate.
+- Kept the existing real-time capture under **Track: live / Print Loop** for printing the Arrangement Loop with upstream processing.
+- Implemented the same LR4 filters and all-pass compensation in a bounded streaming worker. Added PCM/float WAV and AIFF reading; macOS uses its built-in Core Audio converter for compressed sources such as MP3.
+- Native Live verification: a four-minute WAV produced all eight muted, unwarped tracks in 14.5 seconds with no transport movement. MP3 import also passed. Offline/native stereo comparison differed by at most 1.87e-9 in the measured fragment.
+- Added independent DSP and file-format regression checks, block continuity, source preservation, invalid-sample rejection and cancellation cleanup tests. Distribution remains one frozen `.amxd`, requiring Max 9.1+.
+
 ## v1.2.0 — 2026-11-10
 
 - Added Print Bands to the dock and expanded window: capture all eight stereo bands in one playback pass over the Arrangement Loop brace, then create named, colored tracks with aligned audio clips.

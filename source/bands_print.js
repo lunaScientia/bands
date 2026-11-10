@@ -6,7 +6,8 @@ var song = null, owner = null, config = null, saved = null, result = null;
 var started = 0, lastPosition = 0, lastTick = 0, recordMs = 0, lastRecordMs = 0, stallTicks = 0;
 var importIndex = 0, imported = [], pendingTrack = null, pendingClip = null, importWait = 0;
 var ownsTransport = false, currentFolder = '', lastError = '', startJob = false;
-var lastStatus = 'Print Loop -> 8 tracks / pre-gain';
+var sourceMode = 'file';
+var lastStatus = 'Whole source file -> 8 tracks / fast';
 function getvalueof() {return [state,lastStatus];}
 var colors = [0xb087ff,0x4da3ff,0x38d9c2,0xf0b85c,0xfa9152,0xf26e7d,0xe67ac9,0xa8c7f7];
 var stepTask = new Task(step, this), watchdog = new Task(watch, this);
@@ -24,8 +25,14 @@ function message(text) {
     lastStatus=text;
     obj('printstatus').message('set', text);
     obj('printstatus').message('hint', text);
-    obj('printbutton').message('text', state === 'idle' ? 'Print Bands' : 'Cancel Print');
-    messnamed(uid + '-view', ['printstatus', state !== 'idle' ? 1 : 0, text]);
+    obj('printbutton').message('text', state === 'idle' ? (sourceMode==='file'?'Split File':'Print Loop') : 'Cancel');
+    obj('printmode').message('text',sourceMode==='file'?'File: fast':'Track: live');
+    messnamed(uid + '-view', ['printstatus', state !== 'idle' ? 1 : 0, text, sourceMode]);
+}
+function mode() {
+    if(state!=='idle')return;
+    sourceMode=sourceMode==='file'?'live':'file';
+    message(sourceMode==='file'?'Whole source file -> 8 tracks / fast':'Arrangement Loop -> 8 tracks / real time');
 }
 function schedule(next, delay) {state = next; stepTask.cancel(); stepTask.schedule(delay || 100);}
 function ready() {workerReady = true; if(state === 'worker') begin();}
@@ -40,7 +47,7 @@ function recorded(v) {recordMs = Number(v);}
 function edges() {
     var a = arrayfromargs(arguments);
     if(a.length !== 7) return;
-    if((activeCapture() || state==='prepare' || state==='worker') && config) {
+    if((activeCapture() || state==='prepare' || state==='worker') && config && config.mode!=='file') {
         for(var i=0;i<7;i++) if(Math.abs(a[i]-config.edges[i]) > .001) {fail('Crossovers changed. Set them, then print again.'); break;}
     }
     edgesNow = a;
@@ -58,11 +65,12 @@ function choosefolder() {if(state === 'idle') {startJob=false;outlet(1,'bang');}
 function folder() {
     folderPath = arrayfromargs(arguments).join(' ');
     if(state === 'folder') {state='idle'; if(startJob) print();}
-    else message('Output folder selected / Print Loop -> 8 tracks');
+    else message('Output folder selected / '+(sourceMode==='file'?'Split File':'Print Loop')+' -> 8 tracks');
 }
 function foldercancel() {if(state === 'folder') {state='idle';startJob=false;message('Folder selection cancelled.');}}
 function print() {
     if(state !== 'idle') {cancel();return;}
+    if(sourceMode==='file'){printfile();return;}
     imported=[];result=null;
     try {
         song = api('live_set'); owner = findOwner();
@@ -80,7 +88,7 @@ function print() {
         if((start+length-preStart)*60/tempo*rate*68 > 2.8*1024*1024*1024) throw Error('Loop is too long for one print. Select a shorter section.');
         var setPath = string(song,'file_path');
         if(!folderPath && !setPath) {state='folder';startJob=true;message('Choose where to save the eight WAV files.');outlet(1,'bang');return;}
-        config = {start:start,length:length,preStart:preStart,rate:rate,edges:edgesNow.slice(0),reference:string(owner,'name'),folder:folderPath,setPath:setPath};
+        config = {mode:'live',start:start,length:length,preStart:preStart,rate:rate,edges:edgesNow.slice(0),reference:string(owner,'name'),folder:folderPath,setPath:setPath};
         saved = null; result = null; imported = []; pendingTrack = null; pendingClip = null; currentFolder=''; lastError='';
         if(!workerReady) {
             state='worker'; message('Starting Print Bands...');
@@ -89,7 +97,40 @@ function print() {
         } else begin();
     } catch(e) {fail(e.message);}
 }
+function sourceClip() {
+    var selected=api('live_set view detail_clip');
+    if(selected.id && number(selected,'is_audio_clip')) {
+        var parent=api('id '+selected.id);
+        for(var n=0;n<4 && parent.id && parent.type!=='Track';n++)parent.goto('canonical_parent');
+        if(parent.id && Number(parent.id)===Number(owner.id))return selected;
+    }
+    var ids=owner.get('arrangement_clips'),found=[];
+    for(var i=0;i<ids.length-1;i++)if(ids[i]==='id')found.push(Number(ids[i+1]));
+    if(found.length===1)return api('id '+found[0]);
+    throw Error('Select an audio reference clip on this track, then Split File.');
+}
+function printfile() {
+    imported=[];result=null;saved=null;ownsTransport=false;
+    try {
+        song=api('live_set');owner=findOwner();
+        if(!song.id || !owner.id)throw Error('Split File requires Ableton Live.');
+        if(number(song,'record_mode') || number(song,'session_record'))throw Error('Finish recording before creating band tracks.');
+        if(String(owner.info).indexOf('create_audio_clip')<0)throw Error('This Live version cannot import audio through the Live API.');
+        var clip=sourceClip(),source=string(clip,'file_path'),setPath=string(song,'file_path');
+        if(!source)throw Error('The selected clip has no source audio file.');
+        var start=number(clip,'is_arrangement_clip')?number(clip,'start_time'):number(song,'loop_start');
+        if(!isFinite(start) || start<0)throw Error('Invalid destination position.');
+        if(!folderPath && !setPath){state='folder';startJob=true;message('Choose where to save the eight WAV files.');outlet(1,'bang');return;}
+        config={mode:'file',source:source,start:start,edges:edgesNow.slice(0),reference:string(clip,'name'),folder:folderPath,setPath:setPath};
+        pendingTrack=null;pendingClip=null;currentFolder='';lastError='';
+        if(!workerReady){state='worker';message('Starting fast file split...');obj('printworker').message('script','start');stepTask.schedule(15000);}
+        else begin();
+    }catch(e){fail(e.message);}
+}
 function begin() {
+    if(config.mode==='file') {
+        schedule('split',120000);message('Splitting source file...');worker('offline',JSON.stringify(config));return;
+    }
     stepTask.cancel(); state='prepare'; message('Preparing files...');
     worker('prepare',JSON.stringify(config)); stepTask.schedule(15000);
 }
@@ -161,7 +202,8 @@ function watch() {
         if(now-started > 30*60*1000) throw Error('Print timed out. Select a shorter Loop.');
     } catch(e) {fail(e.message);}
 }
-function progress(v) {if(state==='split'){stepTask.cancel();stepTask.schedule(120000);message('Writing WAV files / '+v+'%');}}
+function progress(v) {if(state==='split'){stepTask.cancel();stepTask.schedule(120000);message((config.mode==='file'?'Splitting source file / ':'Writing WAV files / ')+v+'%');}}
+function stage() {if(state==='split'){stepTask.cancel();stepTask.schedule(120000);message(arrayfromargs(arguments).join(' '));}}
 function finished(json) {
     if(state !== 'split') return;
     try {

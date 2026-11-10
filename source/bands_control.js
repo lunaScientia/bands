@@ -76,6 +76,7 @@ function command() {
     if (a[0]==="expand") {send("open","front");return;}
     if (a[0]==="reset") {reset();return;}
     if (a[0]==="print") {send('print-command','print');return;}
+    if (a[0]==="printmode") {send('print-command','mode');return;}
     send("view",a);
 }
 function reset() {

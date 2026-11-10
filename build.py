@@ -3,7 +3,7 @@
 import json, math, pathlib, struct, shutil
 ROOT=pathlib.Path(__file__).resolve().parent
 SRC=ROOT/'source'; DIST=ROOT/'dist'
-VERSION='1.2.0'
+VERSION='1.3.0'
 COLORS=[[.69,.53,1,1],[.30,.64,1,1],[.22,.85,.76,1],[.94,.72,.36,1],
         [.98,.57,.32,1],[.95,.43,.49,1],[.90,.48,.79,1],[.66,.78,.97,1]]
 EDGES=[30,80,250,2000,4000,6000,12000]
@@ -114,8 +114,8 @@ def build():
     route('original','original')
     p.box('reset','textbutton',text='Reset mix',rect=[output_x,148,99,17],pres=[output_x,148,99,17],outs=3,parameter_enable=0,fontsize=9)
     p.box('resetmsg','message',text='command reset');p.wire('reset','resetmsg');p.wire('resetmsg','control')
-    comment('printstatus','Print Loop -> 8 tracks / pre-gain',[547,149,450,16],size=9)
-    for id,label,x,w,selector in [('printbutton','Print Bands',1005,110,'print'),('printfolder','Folder...',1120,79,'choosefolder')]:
+    comment('printstatus','Whole source file -> 8 tracks / fast',[645,149,350,16],size=9)
+    for id,label,x,w,selector in [('printmode','File: fast',547,90,'mode'),('printbutton','Split File',1005,110,'print'),('printfolder','Folder...',1120,79,'choosefolder')]:
         p.box(id,'textbutton',text=label,rect=[x,148,w,17],pres=[x,148,w,17],outs=3,parameter_enable=0,fontsize=9,varname=id)
         p.box(id+'click','message',text=selector);p.wire(id,id+'click');p.wire(id+'click','printcontrol')
     # LR4 splits. Every earlier branch gets the all-pass of each later split.
